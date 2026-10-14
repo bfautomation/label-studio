@@ -21,6 +21,8 @@ const git = async (command, options) => {
       stderr += data;
     });
 
+    child.on("error", reject);
+
     child.on("close", (code) => {
       if (code === 0) {
         resolve(stdout);
@@ -29,6 +31,63 @@ const git = async (command, options) => {
       }
     });
   });
+};
+
+const readGitHeadInfo = async () => {
+  let current = process.cwd();
+
+  while (true) {
+    let gitDir = process.env.GIT_DIR || path.join(current, ".git");
+    try {
+      const stat = await fs.stat(gitDir);
+      if (stat.isFile()) {
+        const pointer = (await fs.readFile(gitDir, "utf-8")).trim();
+        if (!pointer.startsWith("gitdir:")) throw new Error("Invalid Git directory pointer");
+        gitDir = path.resolve(path.dirname(gitDir), pointer.slice(7).trim());
+      }
+      let commonDir = gitDir;
+      try {
+        commonDir = path.resolve(gitDir, (await fs.readFile(path.join(gitDir, "commondir"), "utf-8")).trim());
+      } catch {
+        // Ordinary repositories do not have a separate common directory.
+      }
+      const head = (await fs.readFile(path.join(gitDir, "HEAD"), "utf-8")).trim();
+      if (!head.startsWith("ref: ")) return { commit: head, branch: "" };
+      const ref = head.slice(5).trim();
+      const branch = ref.replace(/^refs\/heads\//, "");
+      for (const refDir of new Set([gitDir, commonDir])) {
+        try {
+          return { commit: (await fs.readFile(path.join(refDir, ref), "utf-8")).trim(), branch };
+        } catch {
+          // The reference may be packed.
+        }
+        try {
+          const refs = await fs.readFile(path.join(refDir, "packed-refs"), "utf-8");
+          const entry = refs.split("\n").find((line) => line.endsWith(` ${ref}`));
+          if (entry) return { commit: entry.split(" ")[0], branch };
+        } catch {
+          // This directory may not contain packed references.
+        }
+      }
+      return { commit: "", branch };
+    } catch {
+      // Source archives can be built without Git metadata.
+    }
+    const parent = path.dirname(current);
+    if (parent === current || process.env.GIT_DIR) break;
+    current = parent;
+  }
+  return { commit: "", branch: "" };
+};
+
+const getFallbackVersionData = async () => {
+  const gitHeadInfo = await readGitHeadInfo();
+  return {
+    message: process.env.GIT_MESSAGE || "Version metadata generated without git context",
+    commit: process.env.GIT_COMMIT || gitHeadInfo.commit || "unknown",
+    date: process.env.GIT_DATE || new Date().toISOString(),
+    branch: process.env.BRANCH_OVERRIDE || process.env.GIT_BRANCH || gitHeadInfo.branch || "unknown",
+  };
 };
 
 /**
@@ -123,12 +182,31 @@ const versionLib = async () => {
     /* ignore */
   }
 
-  const versionData = await getVersionData();
+  let versionData;
+
+  try {
+    versionData = await getVersionData();
+  } catch {
+    versionData = await getFallbackVersionData();
+  }
+
+  for (const [key, value] of Object.entries({
+    commit: process.env.GIT_COMMIT,
+    branch: process.env.BRANCH_OVERRIDE || process.env.GIT_BRANCH,
+    date: process.env.GIT_DATE,
+    message: process.env.GIT_MESSAGE,
+  })) {
+    if (value) versionData[key] = value;
+  }
+
   const versionJson = JSON.stringify(versionData, null, 2);
   const versionFile = path.join(distPath, "version.json");
   await fs.writeFile(versionFile, versionJson);
 };
 
-versionLib().then(() => {
-  console.log("Versioning complete");
-});
+versionLib()
+  .then(() => console.log("Versioning complete"))
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

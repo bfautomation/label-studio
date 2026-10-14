@@ -4,6 +4,10 @@ ARG PYTHON_VERSION=3.12
 ARG POETRY_VERSION=2.3.2
 ARG VERSION_OVERRIDE
 ARG BRANCH_OVERRIDE
+ARG GIT_COMMIT
+ARG GIT_BRANCH
+ARG GIT_DATE
+ARG GIT_MESSAGE
 
 ################################ Overview
 
@@ -73,10 +77,16 @@ RUN --mount=type=cache,target=$POETRY_CACHE_DIR,sharing=locked \
 FROM venv-builder AS py-version-generator
 ARG VERSION_OVERRIDE
 ARG BRANCH_OVERRIDE
+ARG GIT_COMMIT
+ARG GIT_BRANCH
+ARG GIT_DATE
+ARG GIT_MESSAGE
 
 # Create version_.py and ls-version_.py
-RUN --mount=type=bind,source=.git,target=./.git \
-  VERSION_OVERRIDE=${VERSION_OVERRIDE} BRANCH_OVERRIDE=${BRANCH_OVERRIDE} poetry run python label_studio/core/version.py
+RUN --mount=type=bind,target=/build-context \
+    GIT_DIR=/build-context/.git VERSION_OVERRIDE=${VERSION_OVERRIDE} BRANCH_OVERRIDE=${BRANCH_OVERRIDE} \
+    GIT_COMMIT=${GIT_COMMIT} GIT_BRANCH=${GIT_BRANCH} GIT_DATE=${GIT_DATE} GIT_MESSAGE=${GIT_MESSAGE} \
+    poetry run python label_studio/core/version.py
 
 ################################### Stage: prod
 FROM python:${PYTHON_VERSION}-slim AS production

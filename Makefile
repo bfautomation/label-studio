@@ -16,7 +16,7 @@ shell-dev:
 
 env-dev-setup:
 	if [ ! -f .env ]; then \
-		cp .env.development .env; \
+		printf "FRONTEND_HMR=false\nDJANGO_HOSTNAME=http://localhost:8080\nFRONTEND_HOSTNAME=http://localhost:8010\n" > .env; \
 	fi
 
 docker-dev-override:

@@ -4,6 +4,10 @@ ARG PYTHON_VERSION=3.13
 ARG POETRY_VERSION=2.3.2
 ARG VERSION_OVERRIDE
 ARG BRANCH_OVERRIDE
+ARG GIT_COMMIT
+ARG GIT_BRANCH
+ARG GIT_DATE
+ARG GIT_MESSAGE
 
 ################################ Overview
 
@@ -54,10 +58,22 @@ RUN --mount=type=cache,target=/root/web/.yarn,id=yarn-cache,sharing=locked \
 
 ################################ Stage: frontend-version-generator
 FROM frontend-builder AS frontend-version-generator
+ARG VERSION_OVERRIDE
+ARG BRANCH_OVERRIDE
+ARG GIT_COMMIT
+ARG GIT_BRANCH
+ARG GIT_DATE
+ARG GIT_MESSAGE
+ENV VERSION_OVERRIDE=${VERSION_OVERRIDE} \
+    BRANCH_OVERRIDE=${BRANCH_OVERRIDE} \
+    GIT_COMMIT=${GIT_COMMIT} \
+    GIT_BRANCH=${GIT_BRANCH} \
+    GIT_DATE=${GIT_DATE} \
+    GIT_MESSAGE=${GIT_MESSAGE}
 RUN --mount=type=cache,target=/root/web/.yarn,id=yarn-cache,sharing=locked \
     --mount=type=cache,target=/root/web/.nx,id=nx-cache,sharing=locked \
-    --mount=type=bind,source=.git,target=../.git \
-    yarn version:libs
+    --mount=type=bind,target=/build-context \
+    GIT_DIR=/build-context/.git yarn version:libs
 
 ################################ Stage: venv-builder (prepare the virtualenv)
 FROM python:${PYTHON_VERSION}-alpine AS venv-builder
@@ -119,10 +135,16 @@ RUN --mount=type=cache,target=/.poetry-cache,id=poetry-cache-alpine,sharing=lock
 FROM venv-builder AS py-version-generator
 ARG VERSION_OVERRIDE
 ARG BRANCH_OVERRIDE
+ARG GIT_COMMIT
+ARG GIT_BRANCH
+ARG GIT_DATE
+ARG GIT_MESSAGE
 
 # Create version_.py and ls-version_.py
-RUN --mount=type=bind,source=.git,target=./.git \
-    VERSION_OVERRIDE=${VERSION_OVERRIDE} BRANCH_OVERRIDE=${BRANCH_OVERRIDE} poetry run python label_studio/core/version.py
+RUN --mount=type=bind,target=/build-context \
+    GIT_DIR=/build-context/.git VERSION_OVERRIDE=${VERSION_OVERRIDE} BRANCH_OVERRIDE=${BRANCH_OVERRIDE} \
+    GIT_COMMIT=${GIT_COMMIT} GIT_BRANCH=${GIT_BRANCH} GIT_DATE=${GIT_DATE} GIT_MESSAGE=${GIT_MESSAGE} \
+    poetry run python label_studio/core/version.py
 
 ################################### Stage: prod
 FROM python:${PYTHON_VERSION}-alpine AS production
