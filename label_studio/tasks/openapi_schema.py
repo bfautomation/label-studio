@@ -42,7 +42,19 @@ dm_task_response_example = {
     'predictions': [],
     'annotations': [],
     'drafts': [],
-    'annotators': [],
+    'annotators': [
+        {
+            'user_id': 1,
+            'id': 1,
+            'first_name': 'Jo',
+            'last_name': 'Doe',
+            'username': 'jo.doe',
+            'email': 'jo@example.com',
+            'last_activity': '2024-06-18T23:45:46.048490Z',
+            'avatar': None,
+            'initials': 'JD',
+        }
+    ],
     'inner_id': 2,
     'cancelled_annotations': 0,
     'total_annotations': 0,
@@ -57,7 +69,19 @@ dm_task_response_example = {
     'predictions_model_versions': '',
     'avg_lead_time': None,
     'draft_exists': False,
-    'updated_by': [],
+    'updated_by': [
+        {
+            'user_id': 1,
+            'id': 1,
+            'first_name': 'Jo',
+            'last_name': 'Doe',
+            'username': 'jo.doe',
+            'email': 'jo@example.com',
+            'last_activity': '2024-06-18T23:45:46.048490Z',
+            'avatar': None,
+            'initials': 'JD',
+        }
+    ],
     'data': {'image': '/data/upload/1/6b25fc23-some_3.mp4'},
     'meta': {},
     'created_at': '2024-06-18T23:45:46.048490Z',

@@ -91,6 +91,7 @@ class Column(Enum):
         'annotators',
         'List',
         'Annotators that completed the task (Community). Can include assigned annotators (Enterprise only). '
+        'API responses may return either user IDs or embedded user objects depending on feature flags. '
         'Important note: the filter `type` should be List, but the filter `value` is integer',
     )
     TOTAL_PREDICTIONS = 'total_predictions', 'Number', 'Total number of predictions for the task'

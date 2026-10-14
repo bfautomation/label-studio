@@ -8,6 +8,7 @@ from core.feature_flags import flag_set
 from data_manager.models import Filter, FilterGroup, View
 from django.conf import settings
 from django.db import transaction
+from django.db.models.manager import BaseManager
 from drf_spectacular.utils import extend_schema_field
 from fsm.serializer_fields import FSMStateField
 from projects.models import Project
@@ -21,6 +22,7 @@ from tasks.serializers import (
     TaskSerializer,
 )
 from users.models import User
+from users.serializers import BaseUserSerializer
 
 from label_studio.core.utils.common import round_floats
 
@@ -303,9 +305,34 @@ class ViewSerializer(serializers.ModelSerializer):
 @extend_schema_field(
     {
         'type': 'array',
-        'title': 'User IDs',
-        'description': 'User IDs who updated this task',
-        'items': {'type': 'object', 'title': 'User IDs'},
+        'title': 'Task updaters',
+        'description': 'Users who updated this task. Depending on feature flags, items may be minimal objects with only user_id or embedded user objects.',
+        'items': {
+            'anyOf': [
+                {
+                    'type': 'object',
+                    'title': 'User ID wrapper',
+                    'properties': {
+                        'user_id': {'type': 'integer'},
+                    },
+                },
+                {
+                    'type': 'object',
+                    'title': 'User details',
+                    'properties': {
+                        'user_id': {'type': 'integer'},
+                        'id': {'type': 'integer'},
+                        'first_name': {'type': 'string'},
+                        'last_name': {'type': 'string'},
+                        'username': {'type': 'string'},
+                        'email': {'type': 'string'},
+                        'last_activity': {'type': 'string', 'format': 'date-time'},
+                        'avatar': {'type': 'string', 'nullable': True},
+                        'initials': {'type': 'string'},
+                    },
+                },
+            ]
+        },
     }
 )
 class UpdatedByDMFieldSerializer(serializers.SerializerMethodField):
@@ -316,14 +343,38 @@ class UpdatedByDMFieldSerializer(serializers.SerializerMethodField):
 @extend_schema_field(
     {
         'type': 'array',
-        'title': 'Annotators IDs',
-        'description': 'Annotators IDs who annotated this task',
-        'items': {'type': 'integer', 'title': 'User IDs'},
+        'title': 'Annotators',
+        'description': 'Annotators who annotated this task. Depending on feature flags, items may be bare user IDs or embedded user objects.',
+        'items': {
+            'oneOf': [
+                {'type': 'integer', 'title': 'User ID'},
+                {
+                    'type': 'object',
+                    'title': 'User details',
+                    'properties': {
+                        'user_id': {'type': 'integer'},
+                        'id': {'type': 'integer'},
+                        'first_name': {'type': 'string'},
+                        'last_name': {'type': 'string'},
+                        'username': {'type': 'string'},
+                        'email': {'type': 'string'},
+                        'last_activity': {'type': 'string', 'format': 'date-time'},
+                        'avatar': {'type': 'string', 'nullable': True},
+                        'initials': {'type': 'string'},
+                    },
+                },
+            ]
+        },
     }
 )
 class AnnotatorsDMFieldSerializer(serializers.SerializerMethodField):
     # TODO: get_updated_by implementation is weird, but we need to adhere schema to it
     pass
+
+
+class DataManagerAssigneeUserSerializer(BaseUserSerializer):
+    class Meta(BaseUserSerializer.Meta):
+        fields = ('id', 'first_name', 'last_name', 'username', 'email', 'last_activity', 'avatar', 'initials')
 
 
 @extend_schema_field(
@@ -436,6 +487,20 @@ class PredictionsDMFieldSerializer(serializers.SerializerMethodField):
     pass
 
 
+class DataManagerTaskListSerializer(serializers.ListSerializer):
+    def to_representation(self, data):
+        tasks = list(data.all() if isinstance(data, BaseManager) else data)
+        if self.child._is_global_user_fetching_disabled():
+            user_ids = set()
+            for task in tasks:
+                if 'annotators' in self.child.fields:
+                    user_ids.update(self.child._annotator_ids(task))
+                if 'updated_by' in self.child.fields and task.updated_by_id:
+                    user_ids.add(task.updated_by_id)
+            self.child._serialize_dm_users(user_ids)
+        return super().to_representation(tasks)
+
+
 class DataManagerTaskSerializer(TaskSerializer):
     """Data Manager Task Serializer with FSM state support."""
 
@@ -465,6 +530,7 @@ class DataManagerTaskSerializer(TaskSerializer):
 
     class Meta:
         model = Task
+        list_serializer_class = DataManagerTaskListSerializer
         ref_name = 'data_manager_task_serializer'
         exclude = ('precomputed_agreement', 'allow_skip')
         expandable_fields = {'annotations': (AnnotationSerializer, {'many': True})}
@@ -556,24 +622,63 @@ class DataManagerTaskSerializer(TaskSerializer):
     def get_storage_filename(task):
         return task.get_storage_filename()
 
-    @staticmethod
-    def get_updated_by(obj):
-        return [{'user_id': obj.updated_by_id}] if obj.updated_by_id else []
+    def _is_global_user_fetching_disabled(self):
+        if '_dm_disable_global_user_fetching' not in self.context:
+            request = self.context.get('request')
+            user = getattr(request, 'user', None) or CurrentContext.get_user() or 'auto'
+            self.context['_dm_disable_global_user_fetching'] = flag_set(
+                'fflag_all_feat_utc_204_users_performance_improvements_in_dm_for_large_orgs', user=user
+            )
+        return self.context['_dm_disable_global_user_fetching']
 
-    @staticmethod
-    def get_annotators(obj):
-        if not hasattr(obj, 'annotators'):
+    def _serialize_dm_users(self, user_ids):
+        user_ids = [user_id for user_id in user_ids if user_id is not None]
+        if not user_ids:
             return []
 
-        annotators = obj.annotators
+        cache = self.context.setdefault('_dm_assignee_users_cache', {})
+        missing_ids = set(user_ids) - cache.keys()
+
+        if missing_ids:
+            users = User.objects.filter(id__in=missing_ids).prefetch_related('om_through')
+            # BaseUserSerializer's shared cache may contain a different field set.
+            user_context = {**self.context, 'user_cache': {}}
+            serialized_users = DataManagerAssigneeUserSerializer(users, many=True, context=user_context).data
+            cache.update(dict.fromkeys(missing_ids))
+            for serialized_user in serialized_users:
+                serialized_user['user_id'] = serialized_user['id']
+                cache[serialized_user['id']] = serialized_user
+
+        return [cache[user_id] for user_id in user_ids if cache.get(user_id) is not None]
+
+    def get_updated_by(self, obj):
+        if not obj.updated_by_id:
+            return []
+
+        if self._is_global_user_fetching_disabled():
+            return self._serialize_dm_users([obj.updated_by_id])
+
+        return [{'user_id': obj.updated_by_id}]
+
+    @staticmethod
+    def _annotator_ids(obj):
+        annotators = getattr(obj, 'annotators', None)
         if not annotators:
             return []
         if isinstance(annotators, str):
             annotators = [int(v) for v in annotators.split(',')]
 
-        annotators = list(set(annotators))
-        annotators = [a for a in annotators if a is not None]
-        return annotators if hasattr(obj, 'annotators') and annotators else []
+        return sorted({annotator for annotator in annotators if annotator is not None})
+
+    def get_annotators(self, obj):
+        annotators = self._annotator_ids(obj)
+        if not annotators:
+            return []
+
+        if self._is_global_user_fetching_disabled():
+            return self._serialize_dm_users(annotators)
+
+        return annotators
 
     def get_annotations_ids(self, task):
         return self._pretty_results(task, 'annotations_ids', unique=True)
