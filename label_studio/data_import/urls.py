@@ -12,6 +12,12 @@ _api_projects_urlpatterns = [
     # import api
     path('<int:pk>/tasks/bulk/', api.TasksBulkCreateAPI.as_view(), name='project-tasks-bulk-upload'),
     path('<int:pk>/import', api.ImportAPI.as_view(), name='project-import'),
+    path('<int:pk>/upload-files', api.ProjectFileUploadAPI.as_view(), name='project-upload-files'),
+    path(
+        '<int:pk>/imports/<int:import_pk>/retry-document-upload',
+        api.ProjectDocumentUploadRetryAPI.as_view(),
+        name='project-document-upload-retry',
+    ),
     path('<int:pk>/import/predictions', api.ImportPredictionsAPI.as_view(), name='project-import-predictions'),
     path('<int:pk>/reimport', api.ReImportAPI.as_view(), name='project-reimport'),
     path('<int:pk>/file-uploads', api.FileUploadListAPI.as_view(), name='project-file-upload-list'),

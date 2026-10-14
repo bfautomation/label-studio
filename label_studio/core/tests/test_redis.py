@@ -1,7 +1,10 @@
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from label_studio.core.redis import is_job_on_worker
+import pytest
+
+from label_studio.core.redis import get_job_health, is_job_on_worker, start_job_async_or_sync
 
 
 def test_is_job_on_worker_does_not_call_get_job_ids():
@@ -68,3 +71,36 @@ def test_is_job_on_worker_safe_from_non_main_thread(monkeypatch):
             raise result['error']  # type: ignore[misc]
 
         assert result['value'] is False
+
+
+@pytest.mark.parametrize(
+    'status, workers_available, expected',
+    [
+        ('started', False, 'running'),
+        ('finished', False, 'finished'),
+        ('failed', False, 'failed'),
+        ('queued', True, 'queued'),
+        ('queued', False, 'stalled'),
+        ('deferred', False, 'stalled'),
+        ('scheduled', True, 'queued'),
+    ],
+)
+def test_document_job_health_uses_direct_job_lookup(status, workers_available, expected):
+    # A queue with no registry/list APIs ensures polling never scans other jobs.
+    job = SimpleNamespace(get_status=lambda refresh: status)
+    queue = SimpleNamespace(fetch_job=MagicMock(return_value=job))
+    with (
+        patch('label_studio.core.redis.redis_connected', return_value=True),
+        patch('label_studio.core.redis.django_rq.get_queue', return_value=queue),
+        patch('label_studio.core.redis.queue_has_active_workers', return_value=workers_available),
+    ):
+        assert get_job_health('upload-attempt', 'high') == expected
+    queue.fetch_job.assert_called_once_with('upload-attempt')
+
+
+def test_required_background_job_never_runs_synchronously_without_redis():
+    convert_document = MagicMock()
+    with patch('label_studio.core.redis.redis_connected', return_value=False):
+        with pytest.raises(RuntimeError, match='Background queue is unavailable'):
+            start_job_async_or_sync(convert_document, require_async=True)
+    convert_document.assert_not_called()

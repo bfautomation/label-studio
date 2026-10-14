@@ -193,6 +193,11 @@
     data_manager: {
       max_users_to_display: {{ settings.DM_MAX_USERS_TO_DISPLAY }},
     },
+    document_import: {
+      max_files: {{ settings.DATA_UPLOAD_MAX_NUMBER_FILES }},
+      max_file_size: {{ settings.DOCUMENT_UPLOAD_MAX_FILE_SIZE }},
+      allowed_extensions: {{ settings.DOCUMENT_UPLOAD_ALLOWED_EXTENSIONS|json_dumps_ensure_ascii|safe }},
+    },
 
     {% block app_more_settings %}
       page_title: "Label Studio",

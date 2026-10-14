@@ -4,14 +4,26 @@ import traceback
 from typing import Callable, Optional
 
 from core.feature_flags import flag_set
+from core.redis import get_job_health
 from core.utils.common import load_func
+from core.utils.exceptions import extract_message
+from data_import.document_preprocessing import (
+    DocumentPreprocessingError,
+    cleanup_persisted_document_artifact_files,
+    persist_document_conversion_artifact,
+    preprocess_uploaded_document,
+    validate_document_extension,
+    validate_document_file_size,
+)
 from data_import.uploader import load_tasks_for_async_import_streaming
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 from label_studio_sdk.label_interface import LabelInterface
+from projects.functions.utils import recalculate_created_annotations_and_labels_from_scratch
 from projects.models import ProjectImport, ProjectReimport, ProjectSummary
 from rest_framework.exceptions import ValidationError
-from tasks.models import Task
+from tasks.models import Annotation, Prediction, Task
 from tasks.serializers import sanitize_prediction_import_payload
 from users.models import User
 from webhooks.models import WebhookAction
@@ -22,6 +34,8 @@ from .serializers import ImportApiSerializer
 from .uploader import load_tasks_for_async_import
 
 logger = logging.getLogger(__name__)
+
+DOCUMENT_UPLOAD_QUEUE_NAME = 'high'
 
 
 def async_import_background(
@@ -628,3 +642,405 @@ def async_reimport_background(reimport_id, organization_id, user, **kwargs):
         reimport.save()
 
         post_process_reimport(reimport)
+
+
+def get_document_upload_file_results(project_import):
+    file_upload_ids = project_import.file_upload_ids or []
+    if not file_upload_ids:
+        return []
+
+    file_uploads = FileUpload.objects.filter(
+        id__in=file_upload_ids, project_id=project_import.project_id
+    ).select_related('project', 'conversion_artifact')
+    file_uploads_by_id = {file_upload.id: file_upload for file_upload in file_uploads}
+    ordered_results = []
+
+    for file_upload_id in file_upload_ids:
+        file_upload = file_uploads_by_id.get(file_upload_id)
+        if not file_upload:
+            continue
+
+        terminal = file_upload.preprocessing_status in {
+            FileUpload.PreprocessingStatus.COMPLETED,
+            FileUpload.PreprocessingStatus.FAILED,
+        }
+        job_health = (
+            None
+            if terminal
+            else get_job_health(file_upload.preprocessing_job_id, queue_name=DOCUMENT_UPLOAD_QUEUE_NAME)
+        )
+
+        if file_upload.preprocessing_status == FileUpload.PreprocessingStatus.COMPLETED:
+            status = 'success'
+        elif file_upload.preprocessing_status == FileUpload.PreprocessingStatus.FAILED:
+            status = 'error'
+        elif file_upload.preprocessing_status == FileUpload.PreprocessingStatus.PROCESSING:
+            status = 'processing' if job_health == 'running' else 'queued'
+        else:
+            status = 'processing' if job_health == 'running' else 'queued'
+
+        result = {
+            'file_upload_id': file_upload.id,
+            'filename': file_upload.original_filename,
+            'status': status,
+            'tasks_created': len(file_upload.created_task_ids or []),
+            'task_ids': file_upload.created_task_ids or [],
+        }
+        if job_health:
+            result['job_health'] = job_health
+
+        artifact = getattr(file_upload, 'conversion_artifact', None)
+        if artifact:
+            result['artifact_id'] = artifact.id
+        if file_upload.preprocessing_error:
+            result['error'] = file_upload.preprocessing_error
+
+        ordered_results.append(result)
+
+    return ordered_results
+
+
+def summarize_document_upload_results(project_import):
+    results = get_document_upload_file_results(project_import)
+    success_count = sum(1 for result in results if result['status'] == 'success')
+    error_count = sum(1 for result in results if result['status'] == 'error')
+    processed_files = success_count + error_count
+    total_files = len(results)
+
+    job_health = None
+    stalled_reason = None
+    unfinished_results = [result for result in results if result['status'] not in {'success', 'error'}]
+    has_running_jobs = any(result.get('job_health') == 'running' for result in unfinished_results)
+    has_queued_jobs = any(result.get('job_health') == 'queued' for result in unfinished_results)
+    has_failed_jobs = any(
+        result['status'] not in {'success', 'error'} and result.get('job_health') == 'failed' for result in results
+    )
+    has_stalled_jobs = any(
+        result['status'] not in {'success', 'error'} and result.get('job_health') in {'stalled', 'finished'}
+        for result in results
+    )
+    has_missing_jobs = any(
+        result['status'] not in {'success', 'error'} and result.get('job_health') is None for result in results
+    )
+
+    if has_running_jobs:
+        job_health = 'running'
+    elif has_queued_jobs:
+        job_health = 'queued'
+    elif has_failed_jobs:
+        job_health = 'failed'
+        stalled_reason = 'One or more background file jobs failed before the file state could be reconciled.'
+    elif has_stalled_jobs:
+        job_health = 'stalled'
+        stalled_reason = 'One or more background file jobs are queued but no active workers are available.'
+    elif has_missing_jobs and project_import.status == ProjectImport.Status.IN_PROGRESS:
+        job_health = 'stalled'
+        stalled_reason = 'One or more background file jobs are missing from the queue or worker registries.'
+    elif project_import.job_id:
+        job_health = get_job_health(project_import.job_id, queue_name=DOCUMENT_UPLOAD_QUEUE_NAME)
+        if project_import.status == ProjectImport.Status.IN_PROGRESS and job_health is None:
+            job_health = 'stalled'
+            stalled_reason = 'The background finalization job is missing from the queue or worker registries.'
+
+    return {
+        'results': results,
+        'total_files': total_files,
+        'processed_files': processed_files,
+        'success_count': success_count,
+        'error_count': error_count,
+        'all_succeeded': total_files > 0 and success_count == total_files,
+        'has_errors': error_count > 0,
+        'job_health': job_health,
+        'stalled_reason': stalled_reason,
+    }
+
+
+def _set_file_upload_failed(file_upload_id, error_message, expected_job_id):
+    FileUpload.objects.filter(
+        id=file_upload_id,
+        preprocessing_job_id=expected_job_id,
+        preprocessing_status=FileUpload.PreprocessingStatus.PROCESSING,
+    ).update(
+        preprocessing_status=FileUpload.PreprocessingStatus.FAILED,
+        preprocessing_error=error_message,
+        created_task_ids=[],
+    )
+
+
+def _claim_document_upload_import(import_id):
+    with transaction.atomic():
+        project_import = ProjectImport.objects.select_for_update().get(id=import_id)
+        if project_import.import_type != ProjectImport.Type.DOCUMENT_UPLOAD:
+            raise ValidationError('Project import is not a document upload batch.')
+        if project_import.status == ProjectImport.Status.COMPLETED:
+            return None
+        if project_import.status == ProjectImport.Status.CREATED:
+            project_import.status = ProjectImport.Status.IN_PROGRESS
+            project_import.save(update_fields=['status'])
+        return project_import
+
+
+def _claim_file_upload(project_import, file_upload_id, expected_job_id=None):
+    with transaction.atomic():
+        if file_upload_id not in project_import.file_upload_ids:
+            raise ValidationError('File upload does not belong to this document upload batch.')
+        file_upload = FileUpload.objects.select_for_update().get(
+            id=file_upload_id, project_id=project_import.project_id
+        )
+        if expected_job_id is not None and file_upload.preprocessing_job_id != expected_job_id:
+            return None
+        if file_upload.preprocessing_status != FileUpload.PreprocessingStatus.PENDING:
+            return None
+        file_upload.preprocessing_status = FileUpload.PreprocessingStatus.PROCESSING
+        file_upload.preprocessing_error = ''
+        file_upload.save(update_fields=['preprocessing_status', 'preprocessing_error'])
+        return file_upload
+
+
+def _process_document_upload_file(project_import, file_upload_id, user_id, expected_job_id=None):
+    file_upload = _claim_file_upload(project_import, file_upload_id, expected_job_id)
+    if not file_upload:
+        return
+
+    expected_job_id = file_upload.preprocessing_job_id
+    artifact = None
+    try:
+        validate_document_extension(file_upload.original_filename)
+        validate_document_file_size(file_upload.file)
+        preprocessed_result = preprocess_uploaded_document(
+            project_id=project_import.project_id,
+            file_upload=file_upload,
+            user_id=user_id,
+            metadata=file_upload.preprocessing_metadata,
+        )
+
+        with transaction.atomic():
+            file_upload = FileUpload.objects.select_for_update().get(id=file_upload_id)
+            if (
+                file_upload.preprocessing_status != FileUpload.PreprocessingStatus.PROCESSING
+                or file_upload.preprocessing_job_id != expected_job_id
+            ):
+                return
+
+            artifact = persist_document_conversion_artifact(
+                file_upload=file_upload,
+                artifact_draft=preprocessed_result.artifact_draft,
+            )
+            tasks_payload = []
+            for task_payload in preprocessed_result.tasks_payload:
+                task_payload = dict(task_payload)
+                task_meta = dict(task_payload.get('meta') or {})
+                task_meta['artifact_id'] = artifact.id
+                task_payload['meta'] = task_meta
+                tasks_payload.append(task_payload)
+
+            serializer = ImportApiSerializer(
+                data=tasks_payload, many=True, context={'project': project_import.project}
+            )
+            serializer.is_valid(raise_exception=True)
+            saved_tasks = serializer.save(project_id=project_import.project_id)
+            task_ids = [task.id for task in saved_tasks]
+
+            file_upload.preprocessing_status = FileUpload.PreprocessingStatus.COMPLETED
+            file_upload.preprocessing_error = ''
+            file_upload.preprocessor_name = preprocessed_result.preprocessor_name
+            file_upload.created_task_ids = task_ids
+            file_upload.save(
+                update_fields=[
+                    'preprocessing_status',
+                    'preprocessing_error',
+                    'preprocessor_name',
+                    'created_task_ids',
+                ]
+            )
+
+        if saved_tasks:
+            try:
+                emit_webhooks_for_instance(
+                    file_upload.user.active_organization,
+                    project_import.project,
+                    WebhookAction.TASKS_CREATED,
+                    saved_tasks,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    'Webhook emission failed after document upload task creation for project=%s file_upload=%s',
+                    project_import.project_id,
+                    file_upload_id,
+                )
+    except (ValidationError, DocumentPreprocessingError) as exc:
+        cleanup_persisted_document_artifact_files(artifact)
+        error_message = extract_message(exc)
+        logger.warning(
+            'Document upload preprocessing failed for project=%s filename=%s user=%s: %s',
+            project_import.project_id,
+            file_upload.original_filename,
+            user_id,
+            error_message,
+        )
+        _set_file_upload_failed(file_upload_id, error_message, expected_job_id)
+    except Exception as exc:  # noqa: BLE001
+        cleanup_persisted_document_artifact_files(artifact)
+        error_message = extract_message(exc)
+        logger.exception(
+            'Unexpected document upload preprocessing failure for project=%s filename=%s user=%s',
+            project_import.project_id,
+            file_upload.original_filename,
+            user_id,
+        )
+        _set_file_upload_failed(file_upload_id, error_message, expected_job_id)
+
+
+def _finalize_document_upload_import_locked(project_import):
+    successful_uploads = FileUpload.objects.filter(
+        id__in=project_import.file_upload_ids,
+        project_id=project_import.project_id,
+        preprocessing_status=FileUpload.PreprocessingStatus.COMPLETED,
+    )
+    all_task_ids = []
+    for file_upload in successful_uploads:
+        all_task_ids.extend(file_upload.created_task_ids or [])
+    all_task_ids = list(dict.fromkeys(all_task_ids))
+
+    if all_task_ids:
+        project_import.project._update_tasks_counters_and_task_states(
+            all_task_ids,
+            maximum_annotations_changed=False,
+            overlap_cohort_percentage_changed=False,
+            tasks_number_changed=True,
+            from_scratch=True,
+            recalculate_stats_counts=None,
+        )
+        summary = ProjectSummary.objects.select_for_update().get(project=project_import.project)
+        recalculate_created_annotations_and_labels_from_scratch(
+            project_import.project,
+            summary,
+            project_import.project.organization_id,
+        )
+
+    project_import.task_count = len(all_task_ids)
+    project_import.annotation_count = Annotation.objects.filter(task_id__in=all_task_ids).count()
+    project_import.prediction_count = Prediction.objects.filter(task_id__in=all_task_ids).count()
+    project_import.task_ids = all_task_ids
+    project_import.duration = max(
+        0,
+        int((timezone.now() - (project_import.created_at or timezone.now())).total_seconds()),
+    )
+    project_import.status = ProjectImport.Status.COMPLETED
+    project_import.error = None
+    project_import.traceback = None
+    project_import.finished_at = timezone.now()
+    project_import.job_id = ''
+    project_import.save(
+        update_fields=[
+            'task_count',
+            'annotation_count',
+            'prediction_count',
+            'task_ids',
+            'duration',
+            'status',
+            'error',
+            'traceback',
+            'finished_at',
+            'job_id',
+        ]
+    )
+
+
+def maybe_finalize_document_upload_import(import_id):
+    try:
+        with transaction.atomic():
+            project_import = ProjectImport.objects.select_for_update().get(id=import_id)
+            if project_import.import_type != ProjectImport.Type.DOCUMENT_UPLOAD:
+                raise ValidationError('Project import is not a document upload batch.')
+            if project_import.status == ProjectImport.Status.COMPLETED:
+                return
+            if project_import.status == ProjectImport.Status.CREATED:
+                project_import.status = ProjectImport.Status.IN_PROGRESS
+                project_import.save(update_fields=['status'])
+
+            if FileUpload.objects.filter(
+                id__in=project_import.file_upload_ids,
+                project_id=project_import.project_id,
+                preprocessing_status__in=[
+                    FileUpload.PreprocessingStatus.PENDING,
+                    FileUpload.PreprocessingStatus.PROCESSING,
+                ],
+            ).exists():
+                return
+
+            _finalize_document_upload_import_locked(project_import)
+    except Exception as exc:
+        logger.exception('Document upload finalization failed for import %s', import_id)
+        # Record the failure after the finalization transaction has rolled back.
+        ProjectImport.objects.filter(id=import_id, import_type=ProjectImport.Type.DOCUMENT_UPLOAD).exclude(
+            status=ProjectImport.Status.COMPLETED,
+        ).update(
+            status=ProjectImport.Status.FAILED,
+            error=extract_message(exc),
+            traceback=traceback.format_exc(),
+            finished_at=timezone.now(),
+        )
+        raise
+
+
+def finalize_document_upload_import(import_id):
+    maybe_finalize_document_upload_import(import_id)
+
+
+def async_document_upload_file(import_id, file_upload_id, user_id, expected_job_id=None, **kwargs):
+    try:
+        project_import = _claim_document_upload_import(import_id)
+    except ProjectImport.DoesNotExist:
+        logger.error('ProjectImport with id %s not found, document upload processing failed', import_id)
+        return
+
+    if not project_import:
+        logger.error('Processing document upload import with id %s cannot proceed', import_id)
+        return
+
+    _process_document_upload_file(project_import, file_upload_id, user_id, expected_job_id)
+    maybe_finalize_document_upload_import(import_id)
+
+
+def async_document_upload_background(import_id, user_id, **kwargs):
+    project_import = ProjectImport.objects.get(id=import_id)
+    for file_upload_id in project_import.file_upload_ids:
+        file_upload = FileUpload.objects.get(id=file_upload_id)
+        if file_upload.preprocessing_status == FileUpload.PreprocessingStatus.PENDING:
+            async_document_upload_file(import_id, file_upload_id, user_id, **kwargs)
+    maybe_finalize_document_upload_import(import_id)
+
+
+def set_document_upload_file_background_failure(job, connection, type, value, _):
+    import_id = job.args[0]
+    file_upload_id = job.args[1]
+    error_message = str(value)
+    FileUpload.objects.filter(
+        id=file_upload_id,
+        preprocessing_job_id=job.id,
+        preprocessing_status__in=[
+            FileUpload.PreprocessingStatus.PENDING,
+            FileUpload.PreprocessingStatus.PROCESSING,
+        ],
+    ).update(
+        preprocessing_status=FileUpload.PreprocessingStatus.FAILED,
+        preprocessing_error=error_message,
+        created_task_ids=[],
+    )
+    try:
+        maybe_finalize_document_upload_import(import_id)
+    except Exception:
+        logger.exception('Document upload finalization failed after file job failure for import %s', import_id)
+
+
+def set_document_upload_background_failure(job, connection, type, value, _):
+    import_id = job.args[0]
+    ProjectImport.objects.filter(id=import_id, job_id=job.id).exclude(
+        status=ProjectImport.Status.COMPLETED,
+    ).update(
+        status=ProjectImport.Status.FAILED,
+        traceback=traceback.format_exc(),
+        error=str(value),
+        finished_at=timezone.now(),
+    )

@@ -35,6 +35,7 @@ export const API_CONFIG = {
     fileUploads: "/projects/:pk/file-uploads",
     deleteFileUploads: "DELETE:/projects/:pk/file-uploads",
     importFiles: "POST:/projects/:pk/import",
+    uploadProjectFiles: "POST:/projects/:pk/upload-files",
     reimportFiles: "POST:/projects/:pk/reimport",
     dataSummary: "/projects/:pk/summary",
 

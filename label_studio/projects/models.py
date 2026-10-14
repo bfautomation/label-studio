@@ -1646,6 +1646,10 @@ class ProjectSummary(models.Model):
 
 
 class ProjectImport(models.Model):
+    class Type(models.TextChoices):
+        TASK_IMPORT = 'task_import', _('Task import')
+        DOCUMENT_UPLOAD = 'document_upload', _('Document upload')
+
     class Status(models.TextChoices):
         CREATED = 'created', _('Created')
         IN_PROGRESS = 'in_progress', _('In progress')
@@ -1653,6 +1657,7 @@ class ProjectImport(models.Model):
         COMPLETED = 'completed', _('Completed')
 
     project = models.ForeignKey('projects.Project', null=True, related_name='imports', on_delete=models.CASCADE)
+    import_type = models.CharField(max_length=64, choices=Type.choices, default=Type.TASK_IMPORT)
     preannotated_from_fields = models.JSONField(null=True, blank=True)
     commit_to_project = models.BooleanField(default=False)
     return_task_ids = models.BooleanField(default=False)
@@ -1660,6 +1665,8 @@ class ProjectImport(models.Model):
     url = models.CharField(max_length=2048, null=True, blank=True)
     traceback = models.TextField(null=True, blank=True)
     error = models.TextField(null=True, blank=True)
+    request_metadata = models.JSONField(default=dict, blank=True)
+    job_id = models.CharField(max_length=255, blank=True, default='')
     created_at = models.DateTimeField(_('created at'), null=True, auto_now_add=True, help_text='Creation time')
     updated_at = models.DateTimeField(_('updated at'), null=True, auto_now_add=True, help_text='Updated time')
     finished_at = models.DateTimeField(_('finished at'), help_text='Complete or fail time', null=True, default=None)

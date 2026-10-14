@@ -353,36 +353,41 @@ TEMPLATES = [
     }
 ]
 
-# OSS version does not support Redis
-REDIS_ENABLED = False
+# Redis / RQ
+REDIS_ENABLED = get_bool_env('REDIS_ENABLED', False)
+REDIS_HOST = get_env('REDIS_HOST', 'localhost')
+REDIS_PORT = int(get_env('REDIS_PORT', 6379))
+REDIS_DB = int(get_env('REDIS_DB', 0))
+RQ_DEFAULT_TIMEOUT = int(get_env('RQ_DEFAULT_TIMEOUT', 180))
 
-# RQ
 RQ_QUEUES = {
     'critical': {
-        'HOST': 'localhost',
-        'PORT': 6379,
-        'DB': 0,
-        'DEFAULT_TIMEOUT': 180,
+        'HOST': REDIS_HOST,
+        'PORT': REDIS_PORT,
+        'DB': REDIS_DB,
+        'DEFAULT_TIMEOUT': RQ_DEFAULT_TIMEOUT,
     },
     'high': {
-        'HOST': 'localhost',
-        'PORT': 6379,
-        'DB': 0,
-        'DEFAULT_TIMEOUT': 180,
+        'HOST': REDIS_HOST,
+        'PORT': REDIS_PORT,
+        'DB': REDIS_DB,
+        'DEFAULT_TIMEOUT': RQ_DEFAULT_TIMEOUT,
     },
     'default': {
-        'HOST': 'localhost',
-        'PORT': 6379,
-        'DB': 0,
-        'DEFAULT_TIMEOUT': 180,
+        'HOST': REDIS_HOST,
+        'PORT': REDIS_PORT,
+        'DB': REDIS_DB,
+        'DEFAULT_TIMEOUT': RQ_DEFAULT_TIMEOUT,
     },
     'low': {
-        'HOST': 'localhost',
-        'PORT': 6379,
-        'DB': 0,
-        'DEFAULT_TIMEOUT': 180,
+        'HOST': REDIS_HOST,
+        'PORT': REDIS_PORT,
+        'DB': REDIS_DB,
+        'DEFAULT_TIMEOUT': RQ_DEFAULT_TIMEOUT,
     },
 }
+
+DOCUMENT_UPLOAD_JOB_TIMEOUT_SECONDS = int(get_env('DOCUMENT_UPLOAD_JOB_TIMEOUT_SECONDS', 60 * 60))
 
 # How long to keep failed RQ jobs (in seconds); default is 30 days
 RQ_FAILED_JOB_TTL = int(get_env('RQ_FAILED_JOB_TTL', 30 * 24 * 60 * 60))
@@ -543,6 +548,26 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = int(get_env('DATA_UPLOAD_MAX_MEMORY_SIZE', 250 * 1
 DATA_UPLOAD_MAX_NUMBER_FILES = int(get_env('DATA_UPLOAD_MAX_NUMBER_FILES', 100))
 TASKS_MAX_NUMBER = 1000000
 TASKS_MAX_FILE_SIZE = DATA_UPLOAD_MAX_MEMORY_SIZE
+DOCUMENT_UPLOAD_MAX_FILE_SIZE = int(get_env('LABEL_STUDIO_DOCUMENT_UPLOAD_MAX_FILE_SIZE', TASKS_MAX_FILE_SIZE))
+DOCUMENT_UPLOAD_ALLOWED_EXTENSIONS = tuple(
+    ext.strip().lower()
+    for ext in get_env('LABEL_STUDIO_DOCUMENT_UPLOAD_ALLOWED_EXTENSIONS', '.txt,.md,.markdown').split(',')
+    if ext.strip()
+)
+DOCUMENT_CONVERTER_URL = get_env('LABEL_STUDIO_DOCUMENT_CONVERTER_URL', '').strip()
+DOCUMENT_CONVERTER_TIMEOUT = int(get_env('LABEL_STUDIO_DOCUMENT_CONVERTER_TIMEOUT', 120))
+DOCUMENT_CONVERTER_AUTH_HEADER_NAME = get_env('LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_NAME', '').strip()
+DOCUMENT_CONVERTER_AUTH_HEADER_VALUE = get_env('LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_VALUE', '').strip()
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT = get_env('LABEL_STUDIO_AZURE_DI_ENDPOINT', '').strip()
+AZURE_DOCUMENT_INTELLIGENCE_KEY = get_env('LABEL_STUDIO_AZURE_DI_KEY', '').strip()
+AZURE_DOCUMENT_INTELLIGENCE_API_VERSION = get_env('LABEL_STUDIO_AZURE_DI_API_VERSION', '2024-11-30').strip()
+AZURE_DOCUMENT_INTELLIGENCE_MODEL_ID = get_env('LABEL_STUDIO_AZURE_DI_MODEL_ID', 'prebuilt-layout').strip()
+AZURE_DOCUMENT_INTELLIGENCE_OUTPUT_CONTENT_FORMAT = get_env(
+    'LABEL_STUDIO_AZURE_DI_OUTPUT_CONTENT_FORMAT', 'markdown'
+).strip()
+AZURE_DOCUMENT_INTELLIGENCE_POLL_INTERVAL_SECONDS = float(get_env('LABEL_STUDIO_AZURE_DI_POLL_INTERVAL_SECONDS', 2))
+AZURE_DOCUMENT_INTELLIGENCE_SYNC_TIMEOUT_SECONDS = int(get_env('LABEL_STUDIO_AZURE_DI_SYNC_TIMEOUT_SECONDS', 180))
+AZURE_DOCUMENT_INTELLIGENCE_REQUEST_TIMEOUT_SECONDS = int(get_env('LABEL_STUDIO_AZURE_DI_REQUEST_TIMEOUT_SECONDS', 60))
 
 TASK_LOCK_TTL = int(get_env('TASK_LOCK_TTL', default=86400))
 
@@ -664,6 +689,10 @@ TASK_SERIALIZER_BULK = 'tasks.serializers.BaseTaskSerializerBulk'
 PREPROCESS_FIELD_NAME = 'data_manager.functions.preprocess_field_name'
 INTERACTIVE_DATA_SERIALIZER = 'data_export.serializers.BaseExportDataSerializerForInteractive'
 PROJECT_IMPORT_PERMISSION = 'projects.permissions.ProjectImportPermission'
+FILE_UPLOAD_PREPROCESSOR = get_env(
+    'LABEL_STUDIO_FILE_PREPROCESSOR',
+    'data_import.document_preprocessing.default_document_preprocessor',
+)
 DELETE_TASKS_ANNOTATIONS_POSTPROCESS = None
 DELETE_PREDICTIONS_POSTPROCESS = None
 PROJECT_SAVE_DIMENSIONS_POSTPROCESS = None

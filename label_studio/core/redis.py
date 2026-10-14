@@ -11,6 +11,7 @@ import redis
 from core.current_request import CurrentContext
 from django.conf import settings
 from django_rq import get_connection
+from rq import Worker
 from rq.command import send_stop_job_command
 from rq.exceptions import InvalidJobOperation
 from rq.registry import StartedJobRegistry
@@ -50,28 +51,46 @@ def _truncate_args_for_logging(args, kwargs, max_length=30):
         return 'failed to format arguments'
 
 
-try:
-    _redis = get_connection()
-    _redis.ping()
-    logger.debug('=> Redis is connected successfully.')
-except:  # noqa: E722
-    logger.debug('=> Redis is not connected.')
-    _redis = None
+_redis = None
+
+
+def _ensure_redis_connection(force_refresh=False):
+    global _redis
+
+    if force_refresh:
+        _redis = None
+
+    if _redis is not None:
+        return _redis
+
+    try:
+        _redis = get_connection()
+        _redis.ping()
+        logger.debug('=> Redis is connected successfully.')
+    except Exception:
+        logger.debug('=> Redis is not connected.')
+        _redis = None
+
+    return _redis
 
 
 def redis_healthcheck():
-    if not _redis:
+    connection = _ensure_redis_connection(force_refresh=_redis is None)
+    if not connection:
         return False
     try:
-        _redis.ping()
+        connection.ping()
     except redis.exceptions.ConnectionError as exc:
         logger.error(f'Redis healthcheck failed with ConnectionError: {exc}', exc_info=True)
+        _ensure_redis_connection(force_refresh=True)
         return False
     except redis.exceptions.TimeoutError as exc:
         logger.error(f'Redis healthcheck failed with TimeoutError: {exc}', exc_info=True)
+        _ensure_redis_connection(force_refresh=True)
         return False
     except redis.exceptions.RedisError as exc:
         logger.error(f'Redis healthcheck failed: {exc}', exc_info=True)
+        _ensure_redis_connection(force_refresh=True)
         return False
     else:
         logger.debug('Redis client is alive!')
@@ -82,6 +101,52 @@ def redis_connected():
     if settings.REDIS_ENABLED:
         return redis_healthcheck()
     return False
+
+
+def queue_async_available(queue_name='default'):
+    if not redis_connected():
+        return False
+
+    try:
+        queue = django_rq.get_queue(queue_name)
+    except Exception:
+        logger.exception('Failed to acquire RQ queue %s', queue_name)
+        return False
+
+    return queue_has_active_workers(queue_name, queue=queue)
+
+
+def queue_has_active_workers(queue_name='default', queue=None):
+    if not redis_connected():
+        return False
+
+    queue = queue or django_rq.get_queue(queue_name)
+    try:
+        workers = Worker.all(queue.connection)
+    except Exception:
+        logger.exception('Failed to inspect RQ workers for queue %s', queue_name)
+        return False
+
+    return any(queue.name in worker.queue_names() for worker in workers)
+
+
+def get_job_health(job_id, queue_name='default'):
+    if not job_id or not redis_connected():
+        return None
+
+    try:
+        queue = django_rq.get_queue(queue_name)
+        job = queue.fetch_job(job_id)
+        if job is None:
+            return None
+        status = job.get_status(refresh=False)
+    except Exception:
+        logger.exception('Failed to inspect RQ job %s from queue %s', job_id, queue_name)
+        return None
+
+    if status in {'queued', 'deferred', 'scheduled'}:
+        return 'queued' if queue_has_active_workers(queue_name, queue=queue) else 'stalled'
+    return {'started': 'running', 'failed': 'failed', 'finished': 'finished'}.get(status)
 
 
 def _is_serializable(value: Any) -> bool:
@@ -183,6 +248,7 @@ def start_job_async_or_sync(job, *args, in_seconds=0, **kwargs):
             retry = Retry(max=retry)
 
     on_failure = kwargs.pop('on_failure', None)
+    require_async = kwargs.pop('require_async', False)
 
     if redis:
         # Async execution with Redis - wrap job for context management
@@ -217,6 +283,8 @@ def start_job_async_or_sync(job, *args, in_seconds=0, **kwargs):
         )
         return job
     else:
+        if require_async:
+            raise RuntimeError('Background queue is unavailable for this operation.')
         try:
             result = job(*args, **kwargs)
             return result

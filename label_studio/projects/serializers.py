@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import bleach
 from constants import SAFE_HTML_ATTRIBUTES, SAFE_HTML_TAGS
+from data_import.functions import summarize_document_upload_results
 from django.db.models import Q
 from drf_spectacular.utils import extend_schema_field, extend_schema_serializer
 from fsm.serializer_fields import FSMStateField
@@ -408,17 +409,81 @@ class ProjectSummarySerializer(serializers.ModelSerializer):
 
 
 class ProjectImportSerializer(serializers.ModelSerializer):
+    results = SerializerMethodField()
+    total_files = SerializerMethodField()
+    processed_files = SerializerMethodField()
+    success_count = SerializerMethodField()
+    error_count = SerializerMethodField()
+    all_succeeded = SerializerMethodField()
+    has_errors = SerializerMethodField()
+    job_health = SerializerMethodField()
+    stalled_reason = SerializerMethodField()
+
+    def _document_upload_summary(self, obj):
+        cache_key = '_document_upload_summary_cache'
+        cached = getattr(obj, cache_key, None)
+        if cached is not None:
+            return cached
+
+        if obj.import_type != obj.Type.DOCUMENT_UPLOAD:
+            summary = {
+                'results': [],
+                'total_files': 0,
+                'processed_files': 0,
+                'success_count': 0,
+                'error_count': 0,
+                'all_succeeded': False,
+                'has_errors': False,
+                'job_health': None,
+                'stalled_reason': None,
+            }
+        else:
+            summary = summarize_document_upload_results(obj)
+
+        setattr(obj, cache_key, summary)
+        return summary
+
+    def get_results(self, obj):
+        return self._document_upload_summary(obj)['results']
+
+    def get_total_files(self, obj):
+        return self._document_upload_summary(obj)['total_files']
+
+    def get_processed_files(self, obj):
+        return self._document_upload_summary(obj)['processed_files']
+
+    def get_success_count(self, obj):
+        return self._document_upload_summary(obj)['success_count']
+
+    def get_error_count(self, obj):
+        return self._document_upload_summary(obj)['error_count']
+
+    def get_all_succeeded(self, obj):
+        return self._document_upload_summary(obj)['all_succeeded']
+
+    def get_has_errors(self, obj):
+        return self._document_upload_summary(obj)['has_errors']
+
+    def get_job_health(self, obj):
+        return self._document_upload_summary(obj)['job_health']
+
+    def get_stalled_reason(self, obj):
+        return self._document_upload_summary(obj)['stalled_reason']
+
     class Meta:
         model = ProjectImport
         fields = [
             'id',
             'project',
+            'import_type',
             'preannotated_from_fields',
             'commit_to_project',
             'return_task_ids',
             'status',
             'url',
             'error',
+            'request_metadata',
+            'job_id',
             'created_at',
             'updated_at',
             'finished_at',
@@ -432,6 +497,15 @@ class ProjectImportSerializer(serializers.ModelSerializer):
             'data_columns',
             'tasks',
             'task_ids',
+            'results',
+            'total_files',
+            'processed_files',
+            'success_count',
+            'error_count',
+            'all_succeeded',
+            'has_errors',
+            'job_health',
+            'stalled_reason',
         ]
 
 

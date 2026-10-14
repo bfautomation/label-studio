@@ -15,8 +15,12 @@ except:  # noqa: E722
 
 from core.utils.exceptions import extract_message
 from django.conf import settings
-from django.db import models
+from django.core.exceptions import SuspiciousFileOperation
+from django.db import models, transaction
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 from django.utils.functional import cached_property
+from django.utils.text import get_valid_filename
 from rest_framework.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
@@ -26,14 +30,77 @@ def upload_name_generator(instance, filename):
     project = str(instance.project_id)
     project_dir = os.path.join(settings.MEDIA_ROOT, settings.UPLOAD_DIR, project)
     os.makedirs(project_dir, exist_ok=True)
-    path = settings.UPLOAD_DIR + '/' + project + '/' + str(uuid.uuid4())[0:8] + '-' + filename
+    sanitized_filename = sanitize_uploaded_filename(filename)
+    path = settings.UPLOAD_DIR + '/' + project + '/' + str(uuid.uuid4())[0:8] + '-' + sanitized_filename
     return path
 
 
+def artifact_upload_name_generator(instance, filename):
+    project = str(instance.file_upload.project_id)
+    upload_id = str(instance.file_upload_id)
+    project_dir = os.path.join(settings.MEDIA_ROOT, settings.UPLOAD_DIR, 'artifacts', project, upload_id)
+    os.makedirs(project_dir, exist_ok=True)
+    sanitized_filename = sanitize_uploaded_filename(filename)
+    return settings.UPLOAD_DIR + '/artifacts/' + project + '/' + upload_id + '/' + sanitized_filename
+
+
+def sanitize_uploaded_filename(filename):
+    filename = os.path.basename(filename or '')
+    try:
+        sanitized_filename = get_valid_filename(filename)
+    except SuspiciousFileOperation:
+        sanitized_filename = 'upload'
+    return sanitized_filename or 'upload'
+
+
+def normalize_original_filename(filename):
+    filename = os.path.basename(filename or '')
+    return filename or 'upload'
+
+
 class FileUpload(models.Model):
+    class PreprocessingStatus(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        PROCESSING = 'processing', 'Processing'
+        COMPLETED = 'completed', 'Completed'
+        FAILED = 'failed', 'Failed'
+
     user = models.ForeignKey('users.User', related_name='file_uploads', on_delete=models.CASCADE)
     project = models.ForeignKey('projects.Project', related_name='file_uploads', on_delete=models.CASCADE)
     file = models.FileField(upload_to=upload_name_generator)
+    original_filename = models.CharField(max_length=1024, blank=True, default='')
+    sanitized_filename = models.CharField(max_length=1024, blank=True, default='')
+    mime_type = models.CharField(max_length=255, blank=True, default='')
+    file_size = models.BigIntegerField(default=0)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    preprocessing_status = models.CharField(
+        max_length=32,
+        choices=PreprocessingStatus.choices,
+        default=PreprocessingStatus.PENDING,
+    )
+    preprocessing_error = models.TextField(blank=True, default='')
+    preprocessing_metadata = models.JSONField(default=dict, blank=True)
+    created_task_ids = models.JSONField(default=list, blank=True)
+    preprocessor_name = models.CharField(max_length=255, blank=True, default='')
+    preprocessing_job_id = models.CharField(max_length=255, blank=True, default='')
+
+    def save(self, *args, **kwargs):
+        if self.original_filename:
+            self.original_filename = normalize_original_filename(self.original_filename)
+        else:
+            self.original_filename = normalize_original_filename(getattr(self.file, 'name', ''))
+        if self.sanitized_filename:
+            self.sanitized_filename = sanitize_uploaded_filename(self.sanitized_filename)
+        else:
+            self.sanitized_filename = sanitize_uploaded_filename(self.original_filename)
+        if not self.file_size:
+            try:
+                self.file_size = self.file.size
+            except (AttributeError, OSError, ValueError):
+                self.file_size = 0
+        if not self.mime_type:
+            self.mime_type = ''
+        super().save(*args, **kwargs)
 
     def has_permission(self, user):
         user.project = self.project  # link for activity log
@@ -418,6 +485,53 @@ class FileUpload(models.Model):
         # If no tasks were yielded, return empty batch with metadata
         if total_yielded == 0:
             yield [], dict(Counter(fileformats)), common_data_fields
+
+
+class DocumentConversionArtifact(models.Model):
+    class Status(models.TextChoices):
+        COMPLETED = 'completed', 'Completed'
+
+    class Provider(models.TextChoices):
+        LOCAL_TEXT = 'local_text', 'Local text'
+        AZURE_DOCUMENT_INTELLIGENCE = 'azure_document_intelligence', 'Azure Document Intelligence'
+        CUSTOM_PREPROCESSOR = 'custom_preprocessor', 'Custom preprocessor'
+
+    file_upload = models.OneToOneField(
+        'data_import.FileUpload',
+        related_name='conversion_artifact',
+        on_delete=models.CASCADE,
+    )
+    provider = models.CharField(max_length=64, choices=Provider.choices)
+    status = models.CharField(max_length=32, choices=Status.choices, default=Status.COMPLETED)
+    content_format = models.CharField(max_length=64, default='markdown')
+    provider_model_id = models.CharField(max_length=255, blank=True, default='')
+    provider_api_version = models.CharField(max_length=64, blank=True, default='')
+    provider_operation_id = models.CharField(max_length=255, blank=True, default='')
+    raw_result_file = models.FileField(upload_to=artifact_upload_name_generator, blank=True, null=True)
+    raw_markdown_file = models.FileField(upload_to=artifact_upload_name_generator, blank=True, null=True)
+    annotation_markdown_file = models.FileField(upload_to=artifact_upload_name_generator, blank=True, null=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def _delete_attached_files(self):
+        for field_name in ('raw_result_file', 'raw_markdown_file', 'annotation_markdown_file'):
+            field = getattr(self, field_name, None)
+            if field:
+                try:
+                    field.delete(save=False)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        'Failed to delete artifact file for artifact=%s field=%s: %s',
+                        self.pk,
+                        field_name,
+                        exc,
+                    )
+
+
+@receiver(post_delete, sender=DocumentConversionArtifact)
+def cleanup_document_conversion_artifact_files(sender, instance, **kwargs):
+    transaction.on_commit(instance._delete_attached_files, using=kwargs.get('using'))
 
 
 def _old_vs_new_data_keys_inconsistency_message(new_data_keys, old_data_keys, current_file):

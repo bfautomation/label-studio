@@ -12,6 +12,7 @@ import { addCrumb, deleteCrumb } from "../../services/breadrumbs";
 import { cn } from "../../utils/bem";
 import { isDefined } from "../../utils/helpers";
 import { ImportModal } from "../CreateProject/Import/ImportModal";
+import { DocumentUploadModal } from "./DocumentUploadModal";
 import { ExportPage } from "../ExportPage/ExportPage";
 import { APIConfig } from "./api-config";
 
@@ -237,12 +238,14 @@ DataManagerPage.path = "/data";
 DataManagerPage.pages = {
   ExportPage,
   ImportModal,
+  DocumentUploadModal,
 };
 DataManagerPage.context = ({ dmRef }) => {
   const { project } = useProject();
   const [mode, setMode] = useState(dmRef?.mode ?? "explorer");
 
   const links = {
+    "/data/upload-documents": "Import Documents",
     "/settings": "Settings",
   };
 

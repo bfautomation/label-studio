@@ -1,6 +1,14 @@
 services:
   nginx:
-    build: .
+    build:
+      context: .
+      args:
+        VERSION_OVERRIDE: ${LABEL_STUDIO_VERSION_OVERRIDE:-}
+        BRANCH_OVERRIDE: ${LABEL_STUDIO_BRANCH_OVERRIDE:-}
+        GIT_COMMIT: ${LABEL_STUDIO_GIT_COMMIT:-}
+        GIT_BRANCH: ${LABEL_STUDIO_GIT_BRANCH:-}
+        GIT_DATE: ${LABEL_STUDIO_GIT_DATE:-}
+        GIT_MESSAGE: ${LABEL_STUDIO_GIT_MESSAGE:-}
     image: heartexlabs/label-studio:latest
     restart: unless-stopped
     ports:
@@ -27,13 +35,24 @@ services:
   app:
     stdin_open: true
     tty: true
-    build: .
+    build:
+      context: .
+      args:
+        VERSION_OVERRIDE: ${LABEL_STUDIO_VERSION_OVERRIDE:-}
+        BRANCH_OVERRIDE: ${LABEL_STUDIO_BRANCH_OVERRIDE:-}
+        GIT_COMMIT: ${LABEL_STUDIO_GIT_COMMIT:-}
+        GIT_BRANCH: ${LABEL_STUDIO_GIT_BRANCH:-}
+        GIT_DATE: ${LABEL_STUDIO_GIT_DATE:-}
+        GIT_MESSAGE: ${LABEL_STUDIO_GIT_MESSAGE:-}
     image: heartexlabs/label-studio:latest
     restart: unless-stopped
     expose:
       - "8000"
     depends_on:
-      - db
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
     environment:
       - DJANGO_DB=default
       - POSTGRE_NAME=postgres
@@ -43,10 +62,82 @@ services:
       - POSTGRE_HOST=db
       - LABEL_STUDIO_HOST=${LABEL_STUDIO_HOST:-}
       - JSON_LOG=1
+      - LABEL_STUDIO_FILE_PREPROCESSOR=${LABEL_STUDIO_FILE_PREPROCESSOR:-data_import.document_preprocessing.default_document_preprocessor}
+      - LABEL_STUDIO_DOCUMENT_UPLOAD_ALLOWED_EXTENSIONS=${LABEL_STUDIO_DOCUMENT_UPLOAD_ALLOWED_EXTENSIONS:-.txt,.md,.markdown}
+      - LABEL_STUDIO_DOCUMENT_UPLOAD_MAX_FILE_SIZE=${LABEL_STUDIO_DOCUMENT_UPLOAD_MAX_FILE_SIZE:-262144000}
+      - LABEL_STUDIO_DOCUMENT_UPLOAD_JOB_TIMEOUT_SECONDS=${LABEL_STUDIO_DOCUMENT_UPLOAD_JOB_TIMEOUT_SECONDS:-3600}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_URL=${LABEL_STUDIO_DOCUMENT_CONVERTER_URL:-}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_TIMEOUT=${LABEL_STUDIO_DOCUMENT_CONVERTER_TIMEOUT:-120}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_NAME=${LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_NAME:-}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_VALUE=${LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_VALUE:-}
+      - LABEL_STUDIO_AZURE_DI_ENDPOINT=${LABEL_STUDIO_AZURE_DI_ENDPOINT:-}
+      - LABEL_STUDIO_AZURE_DI_KEY=${LABEL_STUDIO_AZURE_DI_KEY:-}
+      - LABEL_STUDIO_AZURE_DI_API_VERSION=${LABEL_STUDIO_AZURE_DI_API_VERSION:-2024-11-30}
+      - LABEL_STUDIO_AZURE_DI_MODEL_ID=${LABEL_STUDIO_AZURE_DI_MODEL_ID:-prebuilt-layout}
+      - LABEL_STUDIO_AZURE_DI_OUTPUT_CONTENT_FORMAT=${LABEL_STUDIO_AZURE_DI_OUTPUT_CONTENT_FORMAT:-markdown}
+      - LABEL_STUDIO_AZURE_DI_POLL_INTERVAL_SECONDS=${LABEL_STUDIO_AZURE_DI_POLL_INTERVAL_SECONDS:-2}
+      - LABEL_STUDIO_AZURE_DI_SYNC_TIMEOUT_SECONDS=${LABEL_STUDIO_AZURE_DI_SYNC_TIMEOUT_SECONDS:-180}
+      - LABEL_STUDIO_AZURE_DI_REQUEST_TIMEOUT_SECONDS=${LABEL_STUDIO_AZURE_DI_REQUEST_TIMEOUT_SECONDS:-60}
+      - UWSGI_HTTP_TIMEOUT=${UWSGI_HTTP_TIMEOUT:-600}
+      - UWSGI_WORKER_HARAKIRI=${UWSGI_WORKER_HARAKIRI:-600}
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
     #      - LOG_LEVEL=DEBUG
     volumes:
       - ./mydata:/label-studio/data:rw
     command: label-studio-uwsgi
+
+  worker:
+    build:
+      context: .
+      args:
+        VERSION_OVERRIDE: ${LABEL_STUDIO_VERSION_OVERRIDE:-}
+        BRANCH_OVERRIDE: ${LABEL_STUDIO_BRANCH_OVERRIDE:-}
+        GIT_COMMIT: ${LABEL_STUDIO_GIT_COMMIT:-}
+        GIT_BRANCH: ${LABEL_STUDIO_GIT_BRANCH:-}
+        GIT_DATE: ${LABEL_STUDIO_GIT_DATE:-}
+        GIT_MESSAGE: ${LABEL_STUDIO_GIT_MESSAGE:-}
+    image: heartexlabs/label-studio:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_started
+      redis:
+        condition: service_started
+    environment:
+      - DJANGO_DB=default
+      - POSTGRE_NAME=postgres
+      - POSTGRE_USER=postgres
+      - POSTGRE_PASSWORD=
+      - POSTGRE_PORT=5432
+      - POSTGRE_HOST=db
+      - LABEL_STUDIO_HOST=${LABEL_STUDIO_HOST:-}
+      - JSON_LOG=1
+      - LABEL_STUDIO_FILE_PREPROCESSOR=${LABEL_STUDIO_FILE_PREPROCESSOR:-data_import.document_preprocessing.default_document_preprocessor}
+      - LABEL_STUDIO_DOCUMENT_UPLOAD_ALLOWED_EXTENSIONS=${LABEL_STUDIO_DOCUMENT_UPLOAD_ALLOWED_EXTENSIONS:-.txt,.md,.markdown}
+      - LABEL_STUDIO_DOCUMENT_UPLOAD_MAX_FILE_SIZE=${LABEL_STUDIO_DOCUMENT_UPLOAD_MAX_FILE_SIZE:-262144000}
+      - LABEL_STUDIO_DOCUMENT_UPLOAD_JOB_TIMEOUT_SECONDS=${LABEL_STUDIO_DOCUMENT_UPLOAD_JOB_TIMEOUT_SECONDS:-3600}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_URL=${LABEL_STUDIO_DOCUMENT_CONVERTER_URL:-}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_TIMEOUT=${LABEL_STUDIO_DOCUMENT_CONVERTER_TIMEOUT:-120}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_NAME=${LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_NAME:-}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_VALUE=${LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_VALUE:-}
+      - LABEL_STUDIO_AZURE_DI_ENDPOINT=${LABEL_STUDIO_AZURE_DI_ENDPOINT:-}
+      - LABEL_STUDIO_AZURE_DI_KEY=${LABEL_STUDIO_AZURE_DI_KEY:-}
+      - LABEL_STUDIO_AZURE_DI_API_VERSION=${LABEL_STUDIO_AZURE_DI_API_VERSION:-2024-11-30}
+      - LABEL_STUDIO_AZURE_DI_MODEL_ID=${LABEL_STUDIO_AZURE_DI_MODEL_ID:-prebuilt-layout}
+      - LABEL_STUDIO_AZURE_DI_OUTPUT_CONTENT_FORMAT=${LABEL_STUDIO_AZURE_DI_OUTPUT_CONTENT_FORMAT:-markdown}
+      - LABEL_STUDIO_AZURE_DI_POLL_INTERVAL_SECONDS=${LABEL_STUDIO_AZURE_DI_POLL_INTERVAL_SECONDS:-2}
+      - LABEL_STUDIO_AZURE_DI_SYNC_TIMEOUT_SECONDS=${LABEL_STUDIO_AZURE_DI_SYNC_TIMEOUT_SECONDS:-180}
+      - LABEL_STUDIO_AZURE_DI_REQUEST_TIMEOUT_SECONDS=${LABEL_STUDIO_AZURE_DI_REQUEST_TIMEOUT_SECONDS:-60}
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+    volumes:
+      - ./mydata:/label-studio/data:rw
+    command: python label_studio/manage.py rqworker critical high default low
 
   db:
     image: pgautoupgrade/pgautoupgrade:17-alpine
@@ -65,3 +156,36 @@ services:
     volumes:
       - ${POSTGRES_DATA_DIR:-./postgres-data}:/var/lib/postgresql/data
       - ./deploy/pgsql/certs:/var/lib/postgresql/certs:ro
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  docling-converter:
+    profiles: [docling]
+    build:
+      context: ./services/docling_converter
+    image: label-studio-docling-converter:latest
+    restart: unless-stopped
+    expose:
+      - "8090"
+    environment:
+      - DOCLING_CONVERTER_SECRET_KEY=${DOCLING_CONVERTER_SECRET_KEY:-docling-converter-dev-secret}
+      - DOCLING_CONVERTER_DEBUG=${DOCLING_CONVERTER_DEBUG:-0}
+      - DOCLING_CONVERTER_MAX_FILE_SIZE=${DOCLING_CONVERTER_MAX_FILE_SIZE:-262144000}
+      - DOCLING_CONVERTER_API_TOKEN=${DOCLING_CONVERTER_API_TOKEN:-}
+      - DOCLING_CONVERTER_AUTH_HEADER_NAME=${DOCLING_CONVERTER_AUTH_HEADER_NAME:-}
+      - DOCLING_CONVERTER_AUTH_HEADER_VALUE=${DOCLING_CONVERTER_AUTH_HEADER_VALUE:-}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_NAME=${LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_NAME:-}
+      - LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_VALUE=${LABEL_STUDIO_DOCUMENT_CONVERTER_AUTH_HEADER_VALUE:-}
+    volumes:
+      - docling-cache:/home/converter/.cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz').read()"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  docling-cache:

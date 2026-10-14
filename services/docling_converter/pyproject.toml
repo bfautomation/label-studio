@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docling-converter-service"
+version = "0.1.0"
+description = "Standalone Django REST service for Docling document conversion"
+requires-python = ">=3.11"
+dependencies = [
+  "gunicorn>=23,<24",
+  "Django>=5.1,<6",
+  "djangorestframework>=3.15,<4",
+  "docling-slim[standard]>=2.104.0,<3",
+]
+
+[tool.setuptools.packages.find]
+include = ["docling_converter_service*", "converter_api*"]

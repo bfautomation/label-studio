@@ -18,7 +18,7 @@ from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.exceptions import ValidationError
 
-from .models import FileUpload
+from .models import FileUpload, normalize_original_filename, sanitize_uploaded_filename
 
 logger = logging.getLogger(__name__)
 csv.field_size_limit(131072 * 10)
@@ -70,7 +70,16 @@ def check_request_files_size(files):
 
 
 def create_file_upload(user, project, file):
-    instance = FileUpload(user=user, project=project, file=file)
+    content_type = getattr(file, 'content_type', None) or mimetypes.guess_type(file.name)[0] or ''
+    instance = FileUpload(
+        user=user,
+        project=project,
+        file=file,
+        original_filename=normalize_original_filename(getattr(file, 'name', '')),
+        sanitized_filename=sanitize_uploaded_filename(getattr(file, 'name', '')),
+        mime_type=content_type,
+        file_size=getattr(file, 'size', 0) or 0,
+    )
     if settings.SVG_SECURITY_CLEANUP:
         content_type, encoding = mimetypes.guess_type(str(instance.file.name))
         if content_type in ['image/svg+xml']:

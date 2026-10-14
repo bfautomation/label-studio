@@ -4,12 +4,13 @@ import json
 import logging
 import mimetypes
 import time
+import uuid
 from urllib.parse import unquote, urlparse
 
 from core.decorators import override_report_only_csp
 from core.feature_flags import flag_set
 from core.permissions import ViewClassPermission, all_permissions
-from core.redis import start_job_async_or_sync
+from core.redis import queue_async_available, start_job_async_or_sync
 from core.utils.common import retry_database_locked, timeit
 from core.utils.exceptions import extract_message
 from core.utils.params import bool_from_request, list_of_strings_from_request
@@ -18,6 +19,7 @@ from django.conf import settings
 from django.core.files.storage import FileSystemStorage
 from django.db import transaction
 from django.http import HttpResponse
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -40,14 +42,26 @@ from webhooks.utils import emit_webhooks_for_instance
 
 from label_studio.core.utils.common import load_func
 
+from .document_preprocessing import (
+    validate_document_extension,
+    validate_document_file_size,
+)
 from .functions import (
+    DOCUMENT_UPLOAD_QUEUE_NAME,
+    async_document_upload_file,
     async_import_background,
     async_reimport_background,
+    finalize_document_upload_import,
+    get_document_upload_file_results,
+    maybe_finalize_document_upload_import,
     reformat_predictions,
+    set_document_upload_background_failure,
+    set_document_upload_file_background_failure,
     set_import_background_failure,
     set_reimport_background_failure,
+    summarize_document_upload_results,
 )
-from .models import FileUpload
+from .models import FileUpload, normalize_original_filename, sanitize_uploaded_filename
 from .serializers import FileUploadSerializer, ImportApiSerializer, PredictionSerializer
 from .uploader import create_file_uploads, load_tasks
 
@@ -431,6 +445,388 @@ class ImportAPI(generics.CreateAPIView):
             return self.async_import(request, project, preannotated_from_fields, commit_to_project, return_task_ids)
         else:
             return self.sync_import(request, project, preannotated_from_fields, commit_to_project, return_task_ids)
+
+
+@method_decorator(
+    name='post',
+    decorator=extend_schema(
+        tags=['Import'],
+        summary='Upload and preprocess document files',
+        description='Upload PDF, DOCX, TXT, or Markdown files for project-level preprocessing into Label Studio tasks.',
+        responses={
+            202: OpenApiResponse(
+                description='Files queued for processing',
+                response={
+                    'type': 'object',
+                    'properties': {
+                        'import': {'type': 'integer'},
+                        'project_id': {'type': 'integer'},
+                        'results': {
+                            'type': 'array',
+                            'items': {
+                                'type': 'object',
+                                'properties': {
+                                    'filename': {'type': 'string'},
+                                    'status': {'type': 'string'},
+                                    'tasks_created': {'type': 'integer'},
+                                    'task_ids': {'type': 'array', 'items': {'type': 'integer'}},
+                                    'artifact_id': {'type': 'integer'},
+                                    'error': {'type': 'string'},
+                                },
+                            },
+                        },
+                    },
+                },
+            ),
+        },
+    ),
+)
+class ProjectFileUploadAPI(generics.CreateAPIView):
+    permission_required = all_permissions.projects_change
+    permission_classes = api_settings.DEFAULT_PERMISSION_CLASSES + [ProjectImportPermission]
+    parser_classes = (MultiPartParser, FormParser)
+    serializer_class = ImportApiSerializer
+    queryset = Task.objects.all()
+
+    def get_serializer_context(self):
+        project = generics.get_object_or_404(Project.objects.for_user(self.request.user), pk=self.kwargs['pk'])
+        return {'project': project, 'user': self.request.user}
+
+    def _parse_metadata(self):
+        metadata = self.request.data.get('metadata')
+        if metadata in (None, ''):
+            return {}
+        if isinstance(metadata, dict):
+            return metadata
+        try:
+            parsed_metadata = json.loads(metadata)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({'metadata': [f'Invalid metadata JSON: {extract_message(exc)}']})
+        if not isinstance(parsed_metadata, dict):
+            raise ValidationError({'metadata': ['Metadata must be a JSON object.']})
+        return parsed_metadata
+
+    def create(self, request, *args, **kwargs):
+        project = generics.get_object_or_404(Project.objects.for_user(self.request.user), pk=self.kwargs['pk'])
+        metadata = self._parse_metadata()
+        uploaded_files = request.FILES.getlist('files') or list(request.FILES.values())
+
+        if not uploaded_files:
+            raise ValidationError({'files': ['At least one file must be uploaded.']})
+
+        if len(uploaded_files) > settings.DATA_UPLOAD_MAX_NUMBER_FILES:
+            raise ValidationError(
+                {'files': [f'No more than {settings.DATA_UPLOAD_MAX_NUMBER_FILES} files can be uploaded at once.']}
+            )
+
+        upload_plans = []
+        has_queueable_files = False
+        for uploaded_file in uploaded_files:
+            original_filename = normalize_original_filename(getattr(uploaded_file, 'name', ''))
+            try:
+                validate_document_extension(original_filename)
+                validate_document_file_size(uploaded_file)
+                validation_error = ''
+                has_queueable_files = True
+            except ValidationError as exc:
+                validation_error = extract_message(exc)
+
+            upload_plans.append(
+                {
+                    'uploaded_file': uploaded_file,
+                    'original_filename': original_filename,
+                    'sanitized_filename': sanitize_uploaded_filename(original_filename),
+                    'mime_type': getattr(uploaded_file, 'content_type', '')
+                    or mimetypes.guess_type(original_filename)[0]
+                    or '',
+                    'file_size': getattr(uploaded_file, 'size', 0) or 0,
+                    'validation_error': validation_error,
+                }
+            )
+
+        if has_queueable_files and not queue_async_available(DOCUMENT_UPLOAD_QUEUE_NAME):
+            return Response(
+                {'detail': 'Document upload queue is unavailable. Start Redis and the worker, then retry.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        file_uploads = []
+        try:
+            with transaction.atomic():
+                for plan in upload_plans:
+                    preprocessing_job_id = str(uuid.uuid4()) if not plan['validation_error'] else ''
+                    file_upload = FileUpload(
+                        user=request.user,
+                        project=project,
+                        file=plan['uploaded_file'],
+                        original_filename=plan['original_filename'],
+                        sanitized_filename=plan['sanitized_filename'],
+                        mime_type=plan['mime_type'],
+                        file_size=plan['file_size'],
+                        preprocessing_status=(
+                            FileUpload.PreprocessingStatus.FAILED
+                            if plan['validation_error']
+                            else FileUpload.PreprocessingStatus.PENDING
+                        ),
+                        preprocessing_error=plan['validation_error'],
+                        preprocessing_metadata=metadata,
+                        preprocessing_job_id=preprocessing_job_id,
+                    )
+                    file_uploads.append(file_upload)
+                    file_upload.save()
+
+                project_import = ProjectImport.objects.create(
+                    project=project,
+                    import_type=ProjectImport.Type.DOCUMENT_UPLOAD,
+                    commit_to_project=True,
+                    return_task_ids=True,
+                    request_metadata=metadata,
+                    file_upload_ids=[file_upload.id for file_upload in file_uploads],
+                    status=(
+                        ProjectImport.Status.IN_PROGRESS if has_queueable_files else ProjectImport.Status.COMPLETED
+                    ),
+                )
+        except Exception:
+            # Storage writes are not rolled back with the database transaction.
+            for file_upload in file_uploads:
+                if file_upload.file and file_upload.file._committed:
+                    try:
+                        file_upload.file.delete(save=False)
+                    except Exception:
+                        logger.exception('Failed to clean up document upload after batch rollback')
+            raise
+
+        if has_queueable_files:
+            enqueued_jobs = 0
+            enqueue_errors = []
+            for file_upload in file_uploads:
+                if file_upload.preprocessing_status != FileUpload.PreprocessingStatus.PENDING:
+                    continue
+
+                try:
+                    start_job_async_or_sync(
+                        async_document_upload_file,
+                        project_import.id,
+                        file_upload.id,
+                        request.user.id,
+                        queue_name=DOCUMENT_UPLOAD_QUEUE_NAME,
+                        on_failure=set_document_upload_file_background_failure,
+                        job_timeout=settings.DOCUMENT_UPLOAD_JOB_TIMEOUT_SECONDS,
+                        require_async=True,
+                        job_id=file_upload.preprocessing_job_id,
+                        expected_job_id=file_upload.preprocessing_job_id,
+                        project_id=project.id,
+                        organization_id=request.user.active_organization.id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    error_message = extract_message(exc)
+                    logger.exception(
+                        'Failed to enqueue document upload file job for import=%s file_upload=%s',
+                        project_import.id,
+                        file_upload.id,
+                    )
+                    enqueue_errors.append(error_message)
+                    FileUpload.objects.filter(id=file_upload.id).update(
+                        preprocessing_status=FileUpload.PreprocessingStatus.FAILED,
+                        preprocessing_error=error_message,
+                        preprocessing_job_id='',
+                        created_task_ids=[],
+                    )
+                else:
+                    enqueued_jobs += 1
+
+            if enqueued_jobs == 0:
+                project_import.status = ProjectImport.Status.FAILED
+                project_import.error = (
+                    enqueue_errors[0] if enqueue_errors else 'Failed to enqueue document preprocessing jobs.'
+                )
+                project_import.traceback = ''
+                project_import.finished_at = timezone.now()
+                project_import.save(update_fields=['status', 'error', 'traceback', 'finished_at'])
+                return Response(
+                    {
+                        'detail': project_import.error,
+                        'import': project_import.id,
+                        'project_id': project.id,
+                        'results': get_document_upload_file_results(project_import),
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            if enqueue_errors:
+                # A fast worker may already have finished before a later enqueue failed.
+                # Reconcile after every file has reached its final enqueue state.
+                try:
+                    maybe_finalize_document_upload_import(project_import.id)
+                except Exception:
+                    logger.exception('Failed to finalize partially enqueued document import %s', project_import.id)
+        else:
+            project_import.finished_at = timezone.now()
+            project_import.save(update_fields=['finished_at'])
+
+        return Response(
+            {
+                'import': project_import.id,
+                'project_id': project.id,
+                'results': get_document_upload_file_results(project_import),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class ProjectDocumentUploadRetryAPI(generics.CreateAPIView):
+    permission_required = all_permissions.projects_change
+    permission_classes = api_settings.DEFAULT_PERMISSION_CLASSES + [ProjectImportPermission]
+    parser_classes = (JSONParser,)
+
+    def create(self, request, *args, **kwargs):
+        project = generics.get_object_or_404(Project.objects.for_user(self.request.user), pk=self.kwargs['pk'])
+        with transaction.atomic():
+            project_import = generics.get_object_or_404(
+                ProjectImport.objects.select_for_update().filter(project=project),
+                pk=self.kwargs['import_pk'],
+            )
+
+            if project_import.import_type != ProjectImport.Type.DOCUMENT_UPLOAD:
+                raise ValidationError('This import is not a document upload batch.')
+
+            summary = summarize_document_upload_results(project_import)
+            job_health = summary['job_health']
+            retryable = project_import.status == ProjectImport.Status.FAILED or (
+                project_import.status in {ProjectImport.Status.CREATED, ProjectImport.Status.IN_PROGRESS}
+                and job_health in {'stalled', 'failed'}
+            )
+            if not retryable:
+                raise ValidationError('This document upload batch is not retryable.')
+
+            if not queue_async_available(DOCUMENT_UPLOAD_QUEUE_NAME):
+                return Response(
+                    {'detail': 'Document upload queue is unavailable. Start Redis and the worker, then retry.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
+            summary_results = summarize_document_upload_results(project_import)['results']
+            summary_results_by_id = {result['file_upload_id']: result for result in summary_results}
+            file_uploads = list(
+                FileUpload.objects.select_for_update()
+                .filter(id__in=project_import.file_upload_ids, project=project)
+                .order_by('id')
+            )
+            file_uploads_by_id = {file_upload.id: file_upload for file_upload in file_uploads}
+            ordered_file_uploads = [
+                file_uploads_by_id[file_upload_id]
+                for file_upload_id in project_import.file_upload_ids
+                if file_upload_id in file_uploads_by_id
+            ]
+
+            reclaimable_uploads = []
+            completed_exists = False
+            for file_upload in ordered_file_uploads:
+                if file_upload.preprocessing_status == FileUpload.PreprocessingStatus.COMPLETED:
+                    completed_exists = True
+                    continue
+                if file_upload.preprocessing_status == FileUpload.PreprocessingStatus.FAILED:
+                    continue
+
+                job_health = summary_results_by_id.get(file_upload.id, {}).get('job_health')
+                if job_health in (None, 'failed', 'stalled', 'finished'):
+                    reclaimable_uploads.append(file_upload)
+
+            unfinished_exists = any(
+                item.preprocessing_status
+                in {FileUpload.PreprocessingStatus.PENDING, FileUpload.PreprocessingStatus.PROCESSING}
+                for item in ordered_file_uploads
+            )
+            finalize_only = (
+                project_import.status == ProjectImport.Status.FAILED and not unfinished_exists and completed_exists
+            )
+            if not finalize_only and not reclaimable_uploads:
+                raise ValidationError('This document upload batch has no reclaimable file jobs.')
+
+            project_import.status = ProjectImport.Status.IN_PROGRESS
+            project_import.error = None
+            project_import.traceback = None
+            project_import.finished_at = None
+            project_import.job_id = str(uuid.uuid4()) if finalize_only else ''
+            project_import.save(update_fields=['status', 'error', 'traceback', 'finished_at', 'job_id'])
+
+            previous_file_state = {}
+            for file_upload in reclaimable_uploads:
+                previous_file_state[file_upload.id] = (
+                    file_upload.preprocessing_status,
+                    file_upload.preprocessing_job_id,
+                )
+                FileUpload.objects.filter(id=file_upload.id).update(
+                    preprocessing_status=FileUpload.PreprocessingStatus.PENDING,
+                    preprocessing_error='',
+                    preprocessing_job_id=str(uuid.uuid4()),
+                )
+
+        try:
+            if finalize_only:
+                finalization_job_id = project_import.job_id
+                start_job_async_or_sync(
+                    finalize_document_upload_import,
+                    project_import.id,
+                    queue_name=DOCUMENT_UPLOAD_QUEUE_NAME,
+                    on_failure=set_document_upload_background_failure,
+                    job_timeout=settings.DOCUMENT_UPLOAD_JOB_TIMEOUT_SECONDS,
+                    require_async=True,
+                    job_id=finalization_job_id,
+                    project_id=project.id,
+                    organization_id=request.user.active_organization.id,
+                )
+            else:
+                enqueued_jobs = 0
+                refreshed_uploads = {
+                    file_upload.id: file_upload
+                    for file_upload in FileUpload.objects.filter(id__in=[item.id for item in reclaimable_uploads])
+                }
+                for file_upload in reclaimable_uploads:
+                    refreshed = refreshed_uploads[file_upload.id]
+                    try:
+                        start_job_async_or_sync(
+                            async_document_upload_file,
+                            project_import.id,
+                            refreshed.id,
+                            request.user.id,
+                            queue_name=DOCUMENT_UPLOAD_QUEUE_NAME,
+                            on_failure=set_document_upload_file_background_failure,
+                            job_timeout=settings.DOCUMENT_UPLOAD_JOB_TIMEOUT_SECONDS,
+                            require_async=True,
+                            job_id=refreshed.preprocessing_job_id,
+                            expected_job_id=refreshed.preprocessing_job_id,
+                            project_id=project.id,
+                            organization_id=request.user.active_organization.id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        previous_status, previous_job_id = previous_file_state[file_upload.id]
+                        FileUpload.objects.filter(id=file_upload.id).update(
+                            preprocessing_status=previous_status,
+                            preprocessing_job_id=previous_job_id,
+                            preprocessing_error=extract_message(exc),
+                        )
+                    else:
+                        enqueued_jobs += 1
+
+                if enqueued_jobs == 0:
+                    raise RuntimeError('Failed to re-enqueue document preprocessing jobs.')
+        except Exception as exc:  # noqa: BLE001
+            error_message = extract_message(exc)
+            project_import.status = ProjectImport.Status.FAILED
+            project_import.error = error_message
+            project_import.traceback = ''
+            project_import.finished_at = timezone.now()
+            project_import.save(update_fields=['status', 'error', 'traceback', 'finished_at'])
+            return Response({'detail': error_message}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        return Response(
+            {
+                'import': project_import.id,
+                'project_id': project.id,
+                'results': get_document_upload_file_results(project_import),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 # Import

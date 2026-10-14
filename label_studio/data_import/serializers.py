@@ -12,6 +12,15 @@ class ImportApiSerializer(TaskSerializer):
 
     annotations = AnnotationSerializer(many=True, default=[])
     predictions = PredictionSerializer(many=True, default=[])
+    file_upload_id = serializers.IntegerField(required=False, write_only=True)
+
+    def validate_file_upload_id(self, value):
+        project = self.context.get('project')
+        if project is None:
+            raise serializers.ValidationError('Project context is required to validate file upload references.')
+        if not FileUpload.objects.filter(id=value, project=project).exists():
+            raise serializers.ValidationError('File upload does not exist in the current project.')
+        return value
 
     class Meta:
         model = Task
