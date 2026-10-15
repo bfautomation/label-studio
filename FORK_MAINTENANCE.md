@@ -44,3 +44,32 @@ The preservation branch includes multiple independent changes and is not intende
 - Upload dialog tests, frontend version tests, and a production frontend build.
 
 For deployment, additionally validate the complete container stack, converter/model setup, storage, and restore procedure in staging.
+
+## Repository governance
+
+AI Engineering (`@bfautomation/ai-engineering`) owns this public company fork and has write access.
+The `default-branch` ruleset targets GitHub's default branch, currently `main`, and requires:
+
+- A pull request with one current CODEOWNER approval, including approval of the latest reviewable push.
+- Dismissal of stale approvals and resolution of review conversations.
+- The GitHub Actions `repository-policy` check on an up-to-date branch. It requires configuration validation,
+  both database test jobs, and the frontend tests/build to succeed; skipped or cancelled jobs fail the gate.
+- No force pushes or default-branch deletion, and no standing ruleset bypass.
+
+Use rebase merges for ordinary company changes. Use merge commits for upstream synchronization to retain
+upstream commit identities and ancestry. Squash merging and mandatory linear history are deliberately
+excluded from this fork's configuration. Merged PR branches are deleted automatically; the separate
+`feature/document-workflow` preservation branch remains available.
+
+Workflow tokens default to read-only and cannot approve PRs. The fork-owned workflow pins external actions
+to full reviewed commit SHAs and validates those pins. Dependency alerts, Dependabot security updates,
+secret scanning and push protection are enabled. Recheck these settings after transfers or policy changes.
+
+Inherited HumanSignal publishing, release, command-dispatch, support, documentation indexing, cache cleanup,
+and upstream-only integration workflows are disabled in this fork's GitHub Actions settings. Their source is
+retained to minimize upstream merge conflicts. Fork checks and CodeQL remain enabled. Review newly imported
+workflows during upstream updates before enabling them or supplying credentials.
+
+Repository administrators can change the ruleset, but have no standing bypass. Any emergency policy change
+must be explicitly authorized, recorded, time-bounded, and reverted after the incident. These GitHub settings
+are maintained outside Git; changing this document alone does not enforce them.
