@@ -21,7 +21,7 @@ class UserAdminShort(UserAdmin):
             'email',
             'username',
             'active_organization',
-            'organization',
+            'created_organization',
             'is_staff',
             'is_superuser',
         )
@@ -51,6 +51,13 @@ class UserAdminShort(UserAdmin):
             ),
             ('Important dates', {'fields': ('last_login', 'date_joined')}),
         )
+
+    @admin.display(description='Organization')
+    def created_organization(self, obj):
+        try:
+            return obj.organization
+        except Organization.DoesNotExist:
+            return None
 
 
 class AsyncMigrationStatusAdmin(admin.ModelAdmin):
@@ -83,8 +90,9 @@ class AsyncMigrationStatusAdmin(admin.ModelAdmin):
         """
         import importlib
 
-        from core.migration_helpers import execute_sql_job
+        from core.migration_helpers import dependency_retry_policy, execute_sql_job
         from core.redis import start_job_async_or_sync
+        from django.conf import settings
 
         executed_count = 0
         skipped_count = 0
@@ -120,14 +128,22 @@ class AsyncMigrationStatusAdmin(admin.ModelAdmin):
                 self._mark_migration_error(migration, 'sql_forwards not found in migration module')
                 error_count += 1
                 continue
+            if callable(sql_fw):
+                sql_fw = sql_fw()
 
             try:
+                module_deps = getattr(module, 'ASYNC_MIGRATION_DEPENDENCIES', None)
+                dependencies = list((migration.meta or {}).get('dependencies') or module_deps or ())
                 start_job_async_or_sync(
                     execute_sql_job,
                     migration_name=migration.name,
                     sql=sql_fw,
                     reverse=False,
+                    dependencies=dependencies,
                     queue_name='default',
+                    job_timeout=settings.RQ_LONG_JOB_TIMEOUT,
+                    retry=dependency_retry_policy() if dependencies else None,
+                    job_scope='system',
                 )
                 migration.status = migration.STATUS_STARTED
                 migration.save()
@@ -156,14 +172,23 @@ class OrganizationMemberAdmin(admin.ModelAdmin):
         self.ordering = ('id',)
 
 
+class OrganizationAdmin(admin.ModelAdmin):
+    search_fields = ('title', 'created_by__email')
+
+
+class ProjectAdmin(admin.ModelAdmin):
+    autocomplete_fields = ('created_by', 'organization', 'deleted_by')
+    search_fields = ('title', 'organization__title', 'organization__created_by__email', 'created_by__email')
+
+
 admin.site.register(User, UserAdminShort)
-admin.site.register(Project)
+admin.site.register(Project, ProjectAdmin)
 admin.site.register(MLBackend)
 admin.site.register(MLBackendTrainJob)
 admin.site.register(Task)
 admin.site.register(Annotation)
 admin.site.register(Prediction)
-admin.site.register(Organization)
+admin.site.register(Organization, OrganizationAdmin)
 admin.site.register(OrganizationMember, OrganizationMemberAdmin)
 admin.site.register(AsyncMigrationStatus, AsyncMigrationStatusAdmin)
 

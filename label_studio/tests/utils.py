@@ -61,9 +61,9 @@ def register_ml_backend_mock(
 
 @contextmanager
 def import_from_url_mock(**kwargs):
-    with mock.patch('core.utils.io.validate_upload_url'):
+    with mock.patch('core.utils.io.validate_url_for_ssrf'):
         with requests_mock.Mocker(real_http=True) as m:
-            with open('./tests/test_suites/samples/test_1.csv', 'rb') as f:
+            with open(Path(__file__).parent / 'test_suites' / 'samples' / 'test_1.csv', 'rb') as f:
                 matcher = re.compile('data\.heartextest\.net/test_1\.csv')
 
                 m.get(matcher, body=f, headers={'Content-Length': '100'})
@@ -324,7 +324,7 @@ def azure_client_mock(sample_json_contents=None, sample_blob_names=None):
     # def dummy_generate_blob_sas(*args, **kwargs):
     #     return 'token'
 
-    with mock.patch.object(models.BlobServiceClient, 'from_connection_string', return_value=DummyAzureClient()):
+    with mock.patch.object(models, 'get_blob_service_client', return_value=DummyAzureClient()):
         with mock.patch.object(models, 'generate_blob_sas', return_value='token'):
             yield
 

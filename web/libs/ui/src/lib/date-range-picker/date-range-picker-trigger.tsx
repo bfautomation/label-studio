@@ -1,10 +1,10 @@
-import type { ReactNode, ComponentPropsWithoutRef } from "react";
+import { CalendarBlankIcon } from "@humansignal/icons";
+import { useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { cnm } from "../../utils/utils";
 import { DropdownTrigger } from "../dropdown/dropdown-trigger";
 import { Typography } from "../typography/typography";
-import { IconCalendar } from "@humansignal/icons";
 import type { DateOrDateTimeRange } from "./date-utils";
 import { formatDateString } from "./date-utils";
-import { cnm } from "../../utils/utils";
 
 type DateRangePickerTriggerProps = {
   /**
@@ -21,7 +21,21 @@ type DateRangePickerTriggerProps = {
    * If not provided, uses default formatting.
    */
   formatLabel?: (dates: { fromString: string; toString: string } | null) => ReactNode;
-} & Omit<ComponentPropsWithoutRef<typeof DropdownTrigger>, "children" | "content">;
+  /**
+   * Optional class name applied to the clickable trigger surface.
+   */
+  className?: string;
+  /**
+   * When true, the caller owns height/padding (e.g. FilterShell value trigger).
+   * Decorative class names do not imply custom chrome.
+   */
+  ownChrome?: boolean;
+  /**
+   * Props spread onto the clickable trigger surface (same pattern as Select `triggerProps`).
+   * Pass `id` here for FilterShell name-as-label / htmlFor wiring.
+   */
+  triggerProps?: ComponentPropsWithoutRef<"div">;
+} & Omit<ComponentPropsWithoutRef<typeof DropdownTrigger>, "children" | "content" | "className" | "id">;
 
 const dateStrings = (dateRange: DateOrDateTimeRange | null): { fromString: string; toString: string } | null => {
   if (!dateRange) {
@@ -67,8 +81,13 @@ export const DateRangePickerTrigger = ({
   disabled,
   dataTestId,
   inline = false,
+  className,
+  ownChrome = false,
+  triggerProps,
+  onToggle,
   ...dropdownTriggerProps
 }: DateRangePickerTriggerProps) => {
+  const [isOpen, setIsOpen] = useState(false);
   const appliedDatesString = dateStrings(selected);
 
   const defaultLabel = appliedDatesString ? (
@@ -92,17 +111,36 @@ export const DateRangePickerTrigger = ({
   const label = formatLabel ? formatLabel(appliedDatesString) : defaultLabel;
 
   return (
-    <DropdownTrigger {...dropdownTriggerProps} disabled={disabled} content={children} inline={inline}>
+    <DropdownTrigger
+      {...dropdownTriggerProps}
+      disabled={disabled}
+      content={children}
+      inline={inline}
+      onToggle={(open) => {
+        setIsOpen(open);
+        onToggle?.(open);
+      }}
+    >
       <div
+        tabIndex={disabled ? undefined : 0}
+        role="button"
+        aria-haspopup="true"
+        aria-expanded={isOpen}
+        aria-disabled={disabled || undefined}
         className={cnm(
-          "flex items-center gap-tight py-tight px-base h-10 border border-neutral-border rounded-smaller cursor-pointer",
+          "flex items-center gap-tight border border-neutral-border rounded-smaller cursor-pointer",
           "hover:border-neutral-border-bold",
+          // FilterShell supplies its own value-trigger chrome.
+          !ownChrome && "py-tight pl-base pr-tight h-10",
           disabled && "opacity-50 cursor-not-allowed",
+          className,
         )}
         data-testid={dataTestId}
+        {...triggerProps}
       >
-        {label}
-        <IconCalendar height={18} width={18} className="text-neutral-content-subtlest shrink-0" />
+        <span className="min-w-0 truncate">{label}</span>
+        {/* 16px matches FilterShell --select-trigger-caret-size / Select caret. */}
+        <CalendarBlankIcon size={16} className="text-neutral-content-subtlest shrink-0" />
       </div>
     </DropdownTrigger>
   );

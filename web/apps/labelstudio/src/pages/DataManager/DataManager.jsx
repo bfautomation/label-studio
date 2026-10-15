@@ -14,45 +14,15 @@ import { isDefined } from "../../utils/helpers";
 import { ImportModal } from "../CreateProject/Import/ImportModal";
 import { DocumentUploadModal } from "./DocumentUploadModal";
 import { ExportPage } from "../ExportPage/ExportPage";
-import { APIConfig } from "./api-config";
+import { clearProjectHotkeysRuntime } from "@humansignal/app-common/pages/AccountSettings/hooks/useHotkeys";
+import { initializeDataManager } from "./initializeDataManager";
+import { useReloadDataManagerOnProjectChange } from "./useReloadDataManagerOnProjectChange";
 
 import "./DataManager.prefix.css";
 
 const loadDependencies = () => [import("@humansignal/datamanager"), import("@humansignal/editor")];
 
-const initializeDataManager = async (root, props, params) => {
-  if (!window.LabelStudio) throw Error("Label Studio Frontend doesn't exist on the page");
-  if (!root && root.dataset.dmInitialized) return;
-
-  root.dataset.dmInitialized = true;
-
-  const { ...settings } = root.dataset;
-
-  const dmConfig = {
-    root,
-    projectId: params.id,
-    apiGateway: `${window.APP_SETTINGS.hostname}/api/dm`,
-    apiVersion: 2,
-    project: params.project,
-    polling: window.APP_SETTINGS?.polling,
-    showPreviews: false,
-    apiEndpoints: APIConfig.endpoints,
-    interfaces: {
-      import: true,
-      export: true,
-      backButton: false,
-      labelingHeader: false,
-      autoAnnotation: params.autoAnnotation,
-    },
-    labelStudio: {
-      keymap: window.APP_SETTINGS.editor_keymap,
-    },
-    ...props,
-    ...settings,
-  };
-
-  return new window.DataManager(dmConfig);
-};
+export { initializeDataManager };
 
 const buildLink = (path, params) => {
   return generatePath(`/projects/:id${path}`, params);
@@ -67,9 +37,11 @@ export const DataManagerPage = ({ ...props }) => {
   const api = useAPI();
   const { project } = useProject();
   const setContextProps = useContextProps();
-  const [crashed, setCrashed] = useState(false);
+  const [crashed, _setCrashed] = useState(false);
   const [loading, setLoading] = useState(!window.DataManager || !window.LabelStudio);
   const dataManagerRef = useRef();
+  /** Bumped in destroyDM so in-flight init after unmount cannot construct a detached DM. */
+  const initGenerationRef = useRef(0);
   const projectId = project?.id;
 
   const init = useCallback(async () => {
@@ -79,19 +51,36 @@ export const DataManagerPage = ({ ...props }) => {
     if (!project?.id) return;
     if (dataManagerRef.current) return;
 
+    const generation = initGenerationRef.current;
+
     const mlBackends = await api.callApi("mlBackends", {
       params: { project: project.id },
     });
 
+    if (generation !== initGenerationRef.current || dataManagerRef.current || !root.current) {
+      return;
+    }
+
     const interactiveBacked = (mlBackends ?? []).find(({ is_interactive }) => is_interactive);
 
-    const dataManager = (dataManagerRef.current =
-      dataManagerRef.current ??
-      (await initializeDataManager(root.current, props, {
+    const created = await initializeDataManager(
+      root.current,
+      props,
+      {
         ...params,
         project,
         autoAnnotation: isDefined(interactiveBacked),
-      })));
+      },
+      { isCancelled: () => generation !== initGenerationRef.current },
+    );
+
+    if (!created || generation !== initGenerationRef.current) {
+      created?.destroy();
+      return;
+    }
+
+    dataManagerRef.current = created;
+    const dataManager = created;
 
     Object.assign(window, { dataManager });
 
@@ -156,7 +145,7 @@ export const DataManagerPage = ({ ...props }) => {
     });
 
     if (interactiveBacked) {
-      dataManager.on("lsf:regionFinishedDrawing", (reg, group) => {
+      dataManager.on("lsf:regionFinishedDrawing", (_reg, group) => {
         const { lsf, task, currentAnnotation: annotation } = dataManager.lsf;
         const ids = group.map((r) => r.cleanId);
         const result = annotation.serializeAnnotation().filter((res) => ids.includes(res.id));
@@ -196,11 +185,21 @@ export const DataManagerPage = ({ ...props }) => {
   }, [projectId]);
 
   const destroyDM = useCallback(() => {
+    initGenerationRef.current += 1;
     if (dataManagerRef.current) {
       dataManagerRef.current.destroy();
       dataManagerRef.current = null;
     }
+    // Allow re-init if the same root node is reused across projects.
+    if (root.current?.dataset?.dmInitialized) {
+      delete root.current.dataset.dmInitialized;
+    }
+    // Project overrides must not stick on Home / Projects / Help after leaving DM.
+    clearProjectHotkeysRuntime();
   }, []);
+
+  // Must run before the init effect so a same-mount :id change clears the old DM first.
+  useReloadDataManagerOnProjectChange(projectId, destroyDM);
 
   useEffect(() => {
     Promise.all(dependencies)
@@ -211,7 +210,7 @@ export const DataManagerPage = ({ ...props }) => {
   useEffect(() => {
     // destroy the data manager when the component is unmounted
     return () => destroyDM();
-  }, []);
+  }, [destroyDM]);
 
   return crashed ? (
     <div className={cn("crash").toClassName()}>

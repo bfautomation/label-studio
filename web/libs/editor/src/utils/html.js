@@ -513,6 +513,36 @@ function findNodeAt(context, at) {
 }
 
 /**
+ * Default allowlist of iframe domains permitted by the HTML sanitizer.
+ *
+ * Used as a fallback when `window.APP_SETTINGS.allowed_iframe_domains` is not
+ * provided (e.g. standalone editor, unit tests, SSR). In production the value
+ * is rendered into the page by Django via `settings.ALLOWED_IFRAME_DOMAINS`,
+ * configurable through the `LABEL_STUDIO_ALLOWED_IFRAME_DOMAINS` env var.
+ *
+ * Keep this list in sync with `ALLOWED_IFRAME_DOMAINS` in
+ * `services/lso/label_studio/core/settings/base.py`.
+ *
+ * @type {string[]}
+ */
+const DEFAULT_ALLOWED_IFRAME_DOMAINS = [
+  "www.youtube.com",
+  "youtube.com",
+  "www.youtube-nocookie.com",
+  "youtube-nocookie.com",
+  "youtu.be",
+  "www.canva.com",
+  "canva.com",
+];
+
+function getAllowedIframeDomains() {
+  const fromSettings =
+    (typeof window !== "undefined" && window.APP_SETTINGS && window.APP_SETTINGS.allowed_iframe_domains) || null;
+  if (Array.isArray(fromSettings) && fromSettings.length > 0) return fromSettings;
+  return DEFAULT_ALLOWED_IFRAME_DOMAINS;
+}
+
+/**
  * Sanitize html from scripts and iframes
  * @param {string} html
  * @returns {string}
@@ -520,14 +550,7 @@ function findNodeAt(context, at) {
 function sanitizeHtml(html = []) {
   if (!html) return "";
 
-  // Whitelist of allowed iframe domains - easily extensible for future additions
-  const ALLOWED_IFRAME_DOMAINS = [
-    "www.youtube.com",
-    "youtube.com",
-    "www.youtube-nocookie.com",
-    "youtube-nocookie.com",
-    "youtu.be", // YouTube's shortened URL format
-  ];
+  const ALLOWED_IFRAME_DOMAINS = getAllowedIframeDomains();
 
   // Helper function to validate if iframe src is from an allowed domain
   const isAllowedIframeSrc = (src) => {
@@ -544,99 +567,11 @@ function sanitizeHtml(html = []) {
       // Check if hostname matches any allowed domain
       const isAllowed = ALLOWED_IFRAME_DOMAINS.includes(url.hostname);
       return isAllowed;
-    } catch (e) {
+    } catch (_e) {
       // Invalid URL format
       return false;
     }
   };
-
-  const disallowedAttributes = [
-    "onauxclick",
-    "onafterprint",
-    "onbeforematch",
-    "onbeforeprint",
-    "onbeforeunload",
-    "onbeforetoggle",
-    "onblur",
-    "oncancel",
-    "oncanplay",
-    "oncanplaythrough",
-    "onchange",
-    "onclick",
-    "onclose",
-    "oncontextlost",
-    "oncontextmenu",
-    "oncontextrestored",
-    "oncopy",
-    "oncuechange",
-    "oncut",
-    "ondblclick",
-    "ondrag",
-    "ondragend",
-    "ondragenter",
-    "ondragleave",
-    "ondragover",
-    "ondragstart",
-    "ondrop",
-    "ondurationchange",
-    "onemptied",
-    "onended",
-    "onerror",
-    "onfocus",
-    "onformdata",
-    "onhashchange",
-    "oninput",
-    "oninvalid",
-    "onkeydown",
-    "onkeypress",
-    "onkeyup",
-    "onlanguagechange",
-    "onload",
-    "onloadeddata",
-    "onloadedmetadata",
-    "onloadstart",
-    "onmessage",
-    "onmessageerror",
-    "onmousedown",
-    "onmouseenter",
-    "onmouseleave",
-    "onmousemove",
-    "onmouseout",
-    "onmouseover",
-    "onmouseup",
-    "onoffline",
-    "ononline",
-    "onpagehide",
-    "onpageshow",
-    "onpaste",
-    "onpause",
-    "onplay",
-    "onplaying",
-    "onpopstate",
-    "onprogress",
-    "onratechange",
-    "onreset",
-    "onresize",
-    "onrejectionhandled",
-    "onscroll",
-    "onscrollend",
-    "onsecuritypolicyviolation",
-    "onseeked",
-    "onseeking",
-    "onselect",
-    "onslotchange",
-    "onstalled",
-    "onstorage",
-    "onsubmit",
-    "onsuspend",
-    "ontimeupdate",
-    "ontoggle",
-    "onunhandledrejection",
-    "onunload",
-    "onvolumechange",
-    "onwaiting",
-    "onwheel",
-  ];
 
   const disallowedTags = {
     script: true,
@@ -668,8 +603,8 @@ function sanitizeHtml(html = []) {
       },
       "*": (tagName, attribs) => {
         Object.keys(attribs).forEach((attr) => {
-          // If the attribute is in the disallowed list, remove it
-          if (disallowedAttributes.includes(attr)) {
+          // Browsers treat every on* attribute as an event handler, so a fixed list always misses some
+          if (/^on/i.test(attr)) {
             delete attribs[attr];
           }
         });
@@ -699,4 +634,5 @@ export {
   createClass,
   moveStylesBetweenHeadTags,
   applyHighlightStylesToDoc,
+  DEFAULT_ALLOWED_IFRAME_DOMAINS,
 };

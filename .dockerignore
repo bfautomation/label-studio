@@ -24,9 +24,10 @@ label_studio/core/ls-version_.py
 !licenses/**
 !LICENSE
 !pyproject.toml
-!poetry.lock
 !.git
 .git/**
 !.git/HEAD
 !.git/packed-refs
 !.git/refs/**
+
+!uv.lock
