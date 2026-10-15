@@ -2,10 +2,6 @@
 
 ## Branches
 
-The integration branch is being renamed from `company/main` to `main`. Until a repository administrator
-completes the GitHub rename, use `company/main` wherever the instructions below say `main`.
-Fork checks accept both names during this transition.
-
 - `feature/document-workflow` preserves the original three custom commits before the first upstream update.
 - `main` integrates upstream with the document workflow and company fixes. Target internal pull requests here.
 - `maintenance/sync-upstream-*` branches contain upstream updates for review and validation.
