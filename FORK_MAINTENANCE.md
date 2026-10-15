@@ -2,8 +2,12 @@
 
 ## Branches
 
+The integration branch is being renamed from `company/main` to `main`. Until a repository administrator
+completes the GitHub rename, use `company/main` wherever the instructions below say `main`.
+Fork checks accept both names during this transition.
+
 - `feature/document-workflow` preserves the original three custom commits before the first upstream update.
-- `company/main` integrates upstream with the document workflow and company fixes. Target internal pull requests here.
+- `main` integrates upstream with the document workflow and company fixes. Target internal pull requests here.
 - `maintenance/sync-upstream-*` branches contain upstream updates for review and validation.
 - `develop` retains the original published history for now. It is not the current company integration branch.
 - `upstream/develop` is the local remote-tracking reference for HumanSignal's development branch.
@@ -15,13 +19,13 @@ This is a development snapshot, not a production release recommendation.
 
 ```bash
 git fetch upstream develop --tags
-git switch company/main
-git pull --ff-only origin company/main
+git switch main
+git pull --ff-only origin main
 git switch -c maintenance/sync-upstream-YYYY-MM-DD
 git merge --no-commit upstream/develop
 ```
 
-Resolve conflicts, run the fork checks, and open an internal PR into `company/main`.
+Resolve conflicts, run the fork checks, and open an internal PR into `main`.
 Use merge commits to preserve upstream ancestry. Do not rebase or force-push shared integration branches.
 Choose and validate upstream release tags separately when preparing a deployment.
 
@@ -37,7 +41,7 @@ The preservation branch includes multiple independent changes and is not intende
 
 ## Validation
 
-`.github/workflows/fork-checks.yml` runs checks for PRs into and pushes to `company/main`, without HumanSignal organization secrets:
+`.github/workflows/fork-checks.yml` runs checks for PRs into and pushes to `main`, without HumanSignal organization secrets:
 
 - Document import, import status, Data Manager, Redis, version, and migration tests on SQLite and PostgreSQL.
 - Standalone converter tests.

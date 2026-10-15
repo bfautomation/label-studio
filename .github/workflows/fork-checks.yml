@@ -1,10 +1,11 @@
 name: Fork checks
 
 on:
+  # Accept both names while an administrator renames the default branch to main.
   pull_request:
-    branches: [company/main]
+    branches: [main, company/main]
   push:
-    branches: [company/main]
+    branches: [main, company/main]
   workflow_dispatch:
 
 permissions:
