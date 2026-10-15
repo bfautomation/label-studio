@@ -78,6 +78,8 @@ class OrganizationListAPI(generics.ListCreateAPIView):
 
     @extend_schema(exclude=True)
     def post(self, request, *args, **kwargs):
+        if not settings.ALLOW_ORGANIZATION_CREATION:
+            raise PermissionDenied('Creating organizations over the API is disabled on this instance')
         return super(OrganizationListAPI, self).post(request, *args, **kwargs)
 
 
@@ -313,6 +315,10 @@ class OrganizationMemberDetailAPI(GetParentObjectMixin, generics.RetrieveDestroy
         if member.user_id == request.user.id:
             return Response({'detail': 'User cannot soft delete self'}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
+        return self._delete_member(request, user, member)
+
+    def _delete_member(self, request, user, member):
+        """Perform the actual member removal. Override in subclasses to add pre-delete hooks."""
         member.soft_delete()
         return Response(status=204)  # 204 No Content is a common HTTP status for successful delete requests
 
@@ -398,7 +404,8 @@ class OrganizationInviteAPI(generics.RetrieveAPIView):
         tags=['Invites'],
         summary='Reset organization token',
         description='Reset the token used in the invitation link to invite someone to an organization.',
-        responses={200: OrganizationInviteSerializer()},
+        request=None,
+        responses={201: OrganizationInviteSerializer()},
         extensions={
             'x-fern-sdk-group-name': 'organizations',
             'x-fern-sdk-method-name': 'reset_token',

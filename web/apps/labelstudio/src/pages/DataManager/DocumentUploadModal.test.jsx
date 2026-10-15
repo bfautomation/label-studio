@@ -1,46 +1,56 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { DocumentUploadModal, getDraggedFiles, getResultPresentation } from "./DocumentUploadModal";
+import { afterEach, beforeEach, expect, it, jest, mock } from "bun:test";
 
-jest.mock("@humansignal/core", () => ({ formatFileSize: (size) => `${size} bytes` }), { virtual: true });
-jest.mock("@humansignal/icons", () => new Proxy({}, { get: () => () => null }), { virtual: true });
-jest.mock(
-  "@humansignal/ui",
-  () => {
-    const Container = ({ children, title }) => (
-      <div>
-        <div>{title}</div>
-        <div>{children}</div>
-      </div>
-    );
-    return {
-      Badge: Container,
-      Message: Container,
-      SimpleCard: Container,
-      Typography: Container,
-      Button: ({ children, onClick, disabled, ...props }) => (
-        <button onClick={onClick} disabled={disabled} aria-label={props["aria-label"]}>
-          {children}
-        </button>
-      ),
-    };
-  },
-  { virtual: true },
+mock.module("@humansignal/core", () => ({ formatFileSize: (size) => `${size} bytes` }));
+mock.module("@humansignal/icons", () =>
+  Object.fromEntries(
+    [
+      "IconCheckCircleOutline",
+      "IconChevronDown",
+      "IconCloseCircleOutline",
+      "IconFileUpload",
+      "IconTrash",
+      "IconUpload",
+      "IconWarningCircle",
+    ].map((name) => [name, () => null]),
+  ),
 );
-jest.mock("../../components/Form", () => ({ TextArea: (props) => <textarea {...props} /> }));
-jest.mock("../../components/Modal/Modal", () => {
+mock.module("@humansignal/ui", () => {
+  const Container = ({ children, title }) => (
+    <div>
+      <div>{title}</div>
+      <div>{children}</div>
+    </div>
+  );
+  return {
+    Badge: Container,
+    Message: Container,
+    SimpleCard: Container,
+    Typography: Container,
+    Button: ({ children, onClick, disabled, ...props }) => (
+      <button onClick={onClick} disabled={disabled} aria-label={props["aria-label"]}>
+        {children}
+      </button>
+    ),
+  };
+});
+mock.module("../../components/Form", () => ({ TextArea: (props) => <textarea {...props} /> }));
+mock.module("../../components/Modal/Modal", () => {
   const Modal = ({ children }) => <div>{children}</div>;
   Modal.Header = ({ children }) => <div>{children}</div>;
   return { Modal };
 });
-jest.mock("../../components/Space/Space", () => ({ Space: ({ children }) => <div>{children}</div> }));
-jest.mock("../../providers/ProjectProvider", () => ({
+mock.module("../../components/Space/Space", () => ({ Space: ({ children }) => <div>{children}</div> }));
+mock.module("../../providers/ProjectProvider", () => ({
   ProjectProvider: ({ children }) => children,
   useProject: () => ({ project: { id: 7 } }),
 }));
-jest.mock("../../providers/RoutesProvider", () => ({
+mock.module("../../providers/RoutesProvider", () => ({
   useFixedLocation: () => ({ pathname: "/projects/7/data/upload-documents", search: "" }),
 }));
-jest.mock("../../utils/hooks", () => ({ useRefresh: () => jest.fn() }));
+mock.module("../../utils/hooks", () => ({ useRefresh: () => jest.fn() }));
+
+const { DocumentUploadModal, getDraggedFiles, getResultPresentation } = await import("./DocumentUploadModal");
 
 const successful = { status: "success", tasks_created: 1 };
 const failed = { status: "error", error: "Conversion failed" };
@@ -64,7 +74,7 @@ beforeEach(() => {
   requests = [];
   window.APP_SETTINGS = { document_import: { allowed_extensions: [".txt", ".pdf"] } };
   global.fetch = jest.fn();
-  jest.spyOn(window, "XMLHttpRequest").mockImplementation(() => {
+  jest.spyOn(globalThis, "XMLHttpRequest").mockImplementation(() => {
     const xhr = {
       open: jest.fn(),
       setRequestHeader: jest.fn(),

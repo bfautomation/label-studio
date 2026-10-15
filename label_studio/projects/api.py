@@ -5,7 +5,7 @@ import os
 import pathlib
 
 from core.feature_flags import flag_set
-from core.filters import ListFilter
+from core.filters import NumberInFilter
 from core.label_config import config_essential_data_has_changed
 from core.mixins import GetParentObjectMixin
 from core.permissions import ViewClassPermission, all_permissions
@@ -28,16 +28,20 @@ from drf_spectacular.utils import OpenApiExample, OpenApiParameter, OpenApiRespo
 from label_studio_sdk.label_interface.interface import LabelInterface
 from ml.serializers import MLBackendSerializer
 from projects.functions.next_task import get_next_task
+from projects.functions.search import search_projects
 from projects.functions.stream_history import get_label_stream_history
 from projects.functions.utils import recalculate_created_annotations_and_labels_from_scratch
+from projects.import_health import ensure_import_job_statuses, health_check_import_job
 from projects.models import Project, ProjectImport, ProjectManager, ProjectReimport, ProjectSummary
 from projects.serializers import (
     GetFieldsSerializer,
     ProjectCountsSerializer,
+    ProjectImportListSerializer,
     ProjectImportSerializer,
     ProjectLabelConfigSerializer,
     ProjectModelVersionExtendedSerializer,
     ProjectModelVersionParamsSerializer,
+    ProjectReimportListSerializer,
     ProjectReimportSerializer,
     ProjectSerializer,
     ProjectSummarySerializer,
@@ -69,34 +73,6 @@ logger = logging.getLogger(__name__)
 
 ProjectImportPermission = load_func(settings.PROJECT_IMPORT_PERMISSION)
 
-_result_schema = {
-    'title': 'Labeling result',
-    'description': 'Labeling result (choices, labels, bounding boxes, etc.)',
-    'type': 'object',
-    'properties': {
-        'from_name': {
-            'type': 'string',
-            'description': 'The name of the labeling tag from the project config',
-        },
-        'to_name': {
-            'type': 'string',
-            'description': 'The name of the labeling tag from the project config',
-        },
-        'value': {
-            'type': 'object',
-            'description': 'Labeling result value. Format depends on chosen ML backend',
-        },
-    },
-    'example': {'from_name': 'image_class', 'to_name': 'image', 'value': {'labels': ['Cat']}},
-}
-
-_task_data_schema = {
-    'title': 'Task data',
-    'description': 'Task data',
-    'type': 'object',
-    'example': {'id': 1, 'my_image_url': '/static/samples/kittens.jpg'},
-}
-
 
 class ProjectListPagination(PageNumberPagination):
     page_size = 30
@@ -104,8 +80,14 @@ class ProjectListPagination(PageNumberPagination):
     max_page_size = 100
 
 
+class ProjectImportJobListPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
 class ProjectFilterSet(FilterSet):
-    ids = ListFilter(field_name='id', lookup_expr='in')
+    ids = NumberInFilter(field_name='id', lookup_expr='in')
     title = CharFilter(field_name='title', lookup_expr='icontains')
 
 
@@ -171,25 +153,68 @@ class ProjectListAPI(generics.ListCreateAPIView):
     )
     pagination_class = ProjectListPagination
 
+    def get_sparse_fields(self):
+        """Return fields selected by rest-flex-fields, or None for the normal full response."""
+        sparse_fields = self.request.query_params.get('fields')
+        if not sparse_fields:
+            return None
+        return [field.strip() for field in sparse_fields.split(',') if field.strip()]
+
+    def get_requested_fields(self, serializer=None):
+        """Return fields needed for list enrichment, preferring sparse response fields over count includes."""
+        sparse_fields = self.get_sparse_fields()
+        if sparse_fields is not None:
+            return sparse_fields
+
+        if serializer is None:
+            serializer = GetFieldsSerializer(data=self.request.query_params)
+            serializer.is_valid(raise_exception=True)
+        return serializer.validated_data.get('include')
+
     def get_queryset(self):
         serializer = GetFieldsSerializer(data=self.request.query_params)
         serializer.is_valid(raise_exception=True)
-        fields = serializer.validated_data.get('include')
+        fields = self.get_requested_fields(serializer)
+        sparse_fields = self.get_sparse_fields()
         filter = serializer.validated_data.get('filter')
         projects = Project.objects.filter(organization=self.request.user.active_organization).order_by(
             F('pinned_at').desc(nulls_last=True), '-created_at'
         )
+        search = serializer.validated_data.get('search')
+        if search:
+            projects = search_projects(projects, search)
         if filter in ['pinned_only', 'exclude_pinned']:
             projects = projects.filter(pinned_at__isnull=filter == 'exclude_pinned')
-        projects = ProjectManager.with_counts_annotate(projects, fields=fields)
+        if fields is None or set(fields) & set(ProjectManager.COUNTER_FIELDS):
+            projects = ProjectManager.with_counts_annotate(projects, fields=fields)
 
         # Only annotate FSM state for UI/API consumption when both feature flags are enabled
-        if flag_set('fflag_feat_fit_568_finite_state_management', user=self.request.user) and flag_set(
-            'fflag_feat_fit_710_fsm_state_fields', user=self.request.user
+        state_requested = (
+            sparse_fields is None
+            or 'state' in sparse_fields
+            or 'state' in self.request.query_params.get('ordering', '')
+            or bool(self.request.query_params.get('state'))
+        )
+        if (
+            state_requested
+            and flag_set('fflag_feat_fit_568_finite_state_management', user=self.request.user)
+            and flag_set('fflag_feat_fit_710_fsm_state_fields', user=self.request.user)
         ):
             projects = projects.with_state()
 
-        return projects.prefetch_related('members', 'created_by')
+        prefetch_fields = []
+        if sparse_fields is None or 'members' in sparse_fields:
+            prefetch_fields.append('members')
+        if sparse_fields is None or 'created_by' in sparse_fields:
+            prefetch_fields.append('created_by')
+        return projects.prefetch_related(*prefetch_fields) if prefetch_fields else projects
+
+    def get_serializer(self, *args, **kwargs):
+        sparse_fields = self.get_sparse_fields()
+        if self.request.method == 'GET' and sparse_fields is not None:
+            fields_param = settings.REST_FLEX_FIELDS.get('FIELDS_PARAM', 'fields')
+            kwargs[fields_param] = sparse_fields
+        return super().get_serializer(*args, **kwargs)
 
     def get_serializer_context(self):
         context = super(ProjectListAPI, self).get_serializer_context()
@@ -548,9 +573,13 @@ class ProjectLabelConfigValidateAPI(generics.RetrieveAPIView):
         if not label_config:
             raise RestValidationError('Label config is not set or is empty')
 
-        # check new config includes meaningful changes
-        has_changed = config_essential_data_has_changed(label_config, project.label_config)
-        project.validate_config(label_config, strict=True)
+        try:
+            # check new config includes meaningful changes
+            has_changed = config_essential_data_has_changed(label_config, project.label_config)
+            project.validate_config(label_config, strict=True)
+        except ValueError as exc:
+            # lxml raises ValueError on a str carrying an XML encoding declaration; surface as 400.
+            raise RestValidationError(str(exc))
         return Response({'config_essential_data_has_changed': has_changed}, status=status.HTTP_200_OK)
 
     @extend_schema(exclude=True)
@@ -595,11 +624,140 @@ class ProjectSummaryResetAPI(GetParentObjectMixin, generics.CreateAPIView):
         return Response(status=status.HTTP_200_OK)
 
 
+class _ProjectImportJobMixin:
+    """Shared helpers for project-scoped import/reimport status views."""
+
+    project_model = Project
+    # Disable LSE default OrderingFilter — list order is fixed (created_at DESC, -id).
+    filter_backends = []
+
+    def _get_project(self):
+        project_pk = self.kwargs.get('pk')
+        return generics.get_object_or_404(
+            self.project_model.objects.for_user(self.request.user),
+            pk=project_pk,
+        )
+
+    def get_queryset(self):
+        return super().get_queryset().filter(project=self._get_project())
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # health_check_import_job updates the instance in-memory when it marks failed.
+        health_check_import_job(instance)
+        return Response(self.get_serializer(instance).data)
+
+
+class _ProjectImportJobListMixin(_ProjectImportJobMixin):
+    """List views: optional status= filter + health-check before serialize."""
+
+    status_model = None  # ProjectImport or ProjectReimport — set on subclasses
+
+    def _validated_status_filter(self):
+        status_filter = self.request.query_params.get('status')
+        if not status_filter:
+            return None
+        valid = {value for value, _label in self.status_model.Status.choices}
+        if status_filter not in valid:
+            raise RestValidationError(
+                {'status': f'Invalid status "{status_filter}". Choose from: {", ".join(sorted(valid))}.'}
+            )
+        return status_filter
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        status_filter = self._validated_status_filter()
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        # Health check may flip in_progress/created → failed. When filtering by status,
+        # rebuild until the page is stable (or a small iteration cap) so count/results
+        # stay consistent and pages are not left short after a second-pass flip.
+        status_filter = self._validated_status_filter()
+        page = None
+        jobs = []
+        for _ in range(5):
+            queryset = self.filter_queryset(self.get_queryset())
+            page = self.paginate_queryset(queryset)
+            jobs = page if page is not None else list(queryset)
+            if not jobs:
+                break
+            ensure_import_job_statuses(jobs)
+            if not status_filter or all(job.status == status_filter for job in jobs):
+                break
+        else:
+            if status_filter:
+                jobs = [job for job in jobs if job.status == status_filter]
+        serializer = self.get_serializer(jobs, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+
 @method_decorator(
     name='get',
     decorator=extend_schema(
         tags=['Projects'],
-        summary='Get project import status ',
+        summary='List project imports',
+        description=(
+            'List asynchronous import jobs for a project (paginated). '
+            'Optionally filter by `status`. Use `page` / `page_size` query params.'
+        ),
+        parameters=[
+            OpenApiParameter(
+                name='id',
+                type=OpenApiTypes.INT,
+                location='path',
+                description='A unique integer value identifying this project.',
+            ),
+            OpenApiParameter(
+                name='status',
+                type=OpenApiTypes.STR,
+                location='query',
+                description='Filter by import status (created, in_progress, failed, completed).',
+            ),
+            OpenApiParameter(
+                name='page',
+                type=OpenApiTypes.INT,
+                location='query',
+                description='Page number within the paginated result set.',
+            ),
+            OpenApiParameter(
+                name='page_size',
+                type=OpenApiTypes.INT,
+                location='query',
+                description='Number of results per page (max 100).',
+            ),
+        ],
+        extensions={
+            'x-fern-sdk-group-name': ['projects', 'imports'],
+            'x-fern-sdk-method-name': 'list',
+            'x-fern-audiences': ['public'],
+            'x-fern-pagination': {
+                'offset': '$request.page',
+                'results': '$response.results',
+            },
+        },
+    ),
+)
+class ProjectImportListAPI(_ProjectImportJobListMixin, generics.ListAPIView):
+    permission_required = all_permissions.projects_change
+    permission_classes = api_settings.DEFAULT_PERMISSION_CLASSES + [ProjectImportPermission]
+    parser_classes = (JSONParser,)
+    serializer_class = ProjectImportListSerializer
+    pagination_class = ProjectImportJobListPagination
+    # nulls_last: defensive for nullable created_at; -id ties / stable pagination.
+    queryset = ProjectImport.objects.all().order_by(F('created_at').desc(nulls_last=True), '-id')
+    status_model = ProjectImport
+
+
+@method_decorator(
+    name='get',
+    decorator=extend_schema(
+        tags=['Projects'],
+        summary='Get project import status',
         description="""
             Poll the status of an asynchronous project import operation.
             
@@ -610,10 +768,18 @@ class ProjectSummaryResetAPI(GetParentObjectMixin, generics.CreateAPIView):
             4. **Import errors and failures will only be visible in this GET response**, not in the original POST request
             
             This endpoint returns detailed information about the import including task counts, status, and any error messages.
+            While an import is running, `task_count` / annotation / prediction counts update as batches commit.
+            Counts are cumulative so far; there is no expected total, so percent-complete / ETA is not available from this API.
         """,
         parameters=[
             OpenApiParameter(
                 name='id',
+                type=OpenApiTypes.INT,
+                location='path',
+                description='A unique integer value identifying this project.',
+            ),
+            OpenApiParameter(
+                name='import_pk',
                 type=OpenApiTypes.INT,
                 location='path',
                 description='A unique integer value identifying this project import.',
@@ -626,13 +792,72 @@ class ProjectSummaryResetAPI(GetParentObjectMixin, generics.CreateAPIView):
         },
     ),
 )
-class ProjectImportAPI(generics.RetrieveAPIView):
+class ProjectImportAPI(_ProjectImportJobMixin, generics.RetrieveAPIView):
     permission_required = all_permissions.projects_change
     permission_classes = api_settings.DEFAULT_PERMISSION_CLASSES + [ProjectImportPermission]
     parser_classes = (JSONParser,)
     serializer_class = ProjectImportSerializer
     queryset = ProjectImport.objects.all()
     lookup_url_kwarg = 'import_pk'
+
+
+@method_decorator(
+    name='get',
+    decorator=extend_schema(
+        tags=['Projects'],
+        summary='List project reimports',
+        description=(
+            'List asynchronous reimport jobs for a project (paginated). '
+            'Optionally filter by `status`. Use `page` / `page_size` query params.'
+        ),
+        parameters=[
+            OpenApiParameter(
+                name='id',
+                type=OpenApiTypes.INT,
+                location='path',
+                description='A unique integer value identifying this project.',
+            ),
+            OpenApiParameter(
+                name='status',
+                type=OpenApiTypes.STR,
+                location='query',
+                description='Filter by reimport status (created, in_progress, failed, completed).',
+            ),
+            OpenApiParameter(
+                name='page',
+                type=OpenApiTypes.INT,
+                location='query',
+                description='Page number within the paginated result set.',
+            ),
+            OpenApiParameter(
+                name='page_size',
+                type=OpenApiTypes.INT,
+                location='query',
+                description='Number of results per page (max 100).',
+            ),
+        ],
+        extensions={
+            'x-fern-sdk-group-name': ['projects', 'reimports'],
+            'x-fern-sdk-method-name': 'list',
+            'x-fern-audiences': ['public'],
+            'x-fern-pagination': {
+                'offset': '$request.page',
+                'results': '$response.results',
+            },
+        },
+    ),
+)
+class ProjectReimportListAPI(_ProjectImportJobListMixin, generics.ListAPIView):
+    permission_required = all_permissions.projects_change
+    permission_classes = api_settings.DEFAULT_PERMISSION_CLASSES + [ProjectImportPermission]
+    parser_classes = (JSONParser,)
+    serializer_class = ProjectReimportListSerializer
+    pagination_class = ProjectImportJobListPagination
+    # created_at is new on ProjectReimport — pre-migration rows are NULL. Postgres
+    # ORDER BY created_at DESC defaults to NULLS FIRST, which would float historical
+    # reimports above newer ones; nulls_last + -id keeps newest first and is stable.
+    queryset = ProjectReimport.objects.all().order_by(F('created_at').desc(nulls_last=True), '-id')
+    status_model = ProjectReimport
 
 
 @method_decorator(
@@ -650,21 +875,31 @@ class ProjectImportAPI(generics.RetrieveAPIView):
             4. **Reimport errors and failures will only be visible in this GET response**, not in the original POST request
             
             This endpoint returns detailed information about the reimport including task counts, status, and any error messages.
+            While a reimport is running, `task_count` / annotation / prediction counts update as batches commit.
+            Counts are cumulative so far; there is no expected total, so percent-complete / ETA is not available from this API.
         """,
         parameters=[
             OpenApiParameter(
                 name='id',
                 type=OpenApiTypes.INT,
                 location='path',
+                description='A unique integer value identifying this project.',
+            ),
+            OpenApiParameter(
+                name='reimport_pk',
+                type=OpenApiTypes.INT,
+                location='path',
                 description='A unique integer value identifying this project reimport.',
             ),
         ],
         extensions={
-            'x-fern-audiences': ['internal'],
+            'x-fern-sdk-group-name': ['projects', 'reimports'],
+            'x-fern-sdk-method-name': 'get',
+            'x-fern-audiences': ['public'],
         },
     ),
 )
-class ProjectReimportAPI(generics.RetrieveAPIView):
+class ProjectReimportAPI(_ProjectImportJobMixin, generics.RetrieveAPIView):
     permission_required = all_permissions.projects_change
     permission_classes = api_settings.DEFAULT_PERMISSION_CLASSES + [ProjectImportPermission]
     parser_classes = (JSONParser,)
@@ -783,6 +1018,9 @@ def read_templates_and_groups():
     configs = []
     for config_file in pathlib.Path(annotation_templates_dir).glob('**/*.yml'):
         config = read_yaml(config_file)
+        # Stable template identity ("<category>/<name>", the template's folder) so clients can
+        # key template-specific behavior on something sturdier than the display title.
+        config.setdefault('slug', config_file.parent.relative_to(annotation_templates_dir).as_posix())
 
         if settings.VERSION_EDITION != 'Community':
             if config.get('group', '').lower() == 'community contributions':
@@ -840,14 +1078,16 @@ class ProjectSampleTask(generics.RetrieveAPIView):
                     annotation['completed_by'] = user_id
                 return Response({'sample_task': complete_task}, status=200)
             except Exception as e:
-                logger.error(
-                    f'Error generating enhanced sample task, falling back to original method: {str(e)}. Label config: {label_config}'
+                logger.warning(
+                    f'Error generating enhanced sample task, falling back to original method: {str(e)}. Label config: {label_config}',
+                    exc_info=True,
                 )
-                # Fallback to project.get_sample_task if LabelInterface.generate_complete_sample_task failed
-                return Response({'sample_task': project.get_sample_task(label_config)}, status=200)
-        else:
-            # Use the simple sample task generation method
+        try:
+            # Fallback to project.get_sample_task if enhanced generation failed, or the simple path otherwise.
             return Response({'sample_task': project.get_sample_task(label_config)}, status=200)
+        except Exception as e:
+            logger.warning(f'Failed to generate sample task for project={project.id}: {e}', exc_info=True)
+            return Response({'detail': 'Unable to generate sample task from the provided label config.'}, status=400)
 
 
 @extend_schema(exclude=True)
@@ -921,6 +1161,15 @@ class ProjectAnnotatorsAPI(generics.RetrieveAPIView):
             .values_list('completed_by_id', flat=True)
             .distinct()
         )
-        users = User.objects.filter(id__in=annotator_ids).prefetch_related('om_through').order_by('id')
+        users = (
+            User.objects.filter(
+                id__in=annotator_ids,
+                om_through__organization=project.organization,
+                om_through__deleted_at__isnull=True,
+            )
+            .distinct()
+            .prefetch_related('om_through')
+            .order_by('id')
+        )
         data = UserSimpleSerializer(users, many=True, context={'request': request}).data
         return Response(data)
