@@ -95,6 +95,8 @@ except psycopg.OperationalError as error:
     print(error)' 2>&1)
 [[ $untrusted == *"certificate verify failed"* ]] && pass "database certificate from an untrusted authority is refused" \
   || fail "database certificate from an untrusted authority is refused ($untrusted)"
+docker compose exec -T app sh -c 'cd /label-studio/label_studio && python3 manage.py migrate --check' >/dev/null 2>&1 \
+  && pass "database schema matches the image" || fail "database schema matches the image"
 
 label_config='<View><Audio name=\"audio\" value=\"$audio\"/></View>'
 project_id=$(api -H 'Content-Type: application/json' \
