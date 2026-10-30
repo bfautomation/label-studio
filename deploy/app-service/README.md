@@ -53,8 +53,21 @@ which includes the authorities Azure Database for PostgreSQL uses. `POSTGRE_HOST
 name, `<server>.postgres.database.azure.com`, not an IP address or the private-link alias. The harness mounts its
 own CA over that file.
 
-App Service configuration outside the app settings:
+`app.env` also carries the `WEBSITES_*` settings, which App Service reads rather than the app. App Service
+configuration outside the app settings:
 
-- Startup command `label-studio-uwsgi`, with `WEBSITES_PORT=8000`.
-- `WEBSITES_ENABLE_APP_SERVICE_STORAGE=true`, so `/home` is persistent storage.
+- Startup command `label-studio-uwsgi`.
 - HTTPS only; the front door adds `X-Forwarded-Proto`, which the app trusts.
+
+## Upgrading
+
+The container applies pending database migrations every time it starts, under a lock so two containers never migrate
+at once. To back up before the structure changes:
+
+1. Compare the deployed image with the candidate: `./schema-changes.sh <deployed image> <candidate image>`. It needs
+   Docker but no database access. Exit code 0 means no schema change, 1 means a schema change, 2 means it failed.
+   The first deployment has nothing to compare and no data to protect.
+2. On a schema change, back up the database before deploying.
+3. Deploy, and look for `Migrations completed` in the container log.
+4. If start-up fails after a schema change, restore the database and redeploy the previous image together: the
+   previous image does not work against the changed structure.
