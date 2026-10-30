@@ -5,7 +5,7 @@ deployed. It holds no environment-specific values: everything it needs is genera
 
 | Service | Stands in for | Notes |
 |---|---|---|
-| `app` | App Service container | Built from this repository. Only `/home` persists, owned by root as on App Service |
+| `app` | App Service container | Built from this repository and started as `label-studio-uwsgi`: uWSGI alone on port 8000, no nginx, Django serving static files and uploads. Only `/home` persists, owned by root as on App Service |
 | `db` | Azure Database for PostgreSQL 16 | TLS required for every network login; the app verifies the server certificate and host name |
 | `blob` | Azure Blob Storage | Azurite answering on `<account>.blob.core.windows.net` with a test certificate, because the Azure connector only talks to the public endpoint |
 
@@ -18,7 +18,7 @@ created on start.
 cd deploy/app-service
 ./setup.sh                   # test CA, certificates and local secrets in .certs/ and .env
 docker compose up -d --build
-./smoke.sh                   # health, login page, a static asset, API, database TLS, Blob storage
+./smoke.sh                   # serving process, pages, static files, API, database TLS, Blob storage, media seeking
 docker compose down -v       # remove containers and all harness data
 ```
 
