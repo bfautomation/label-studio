@@ -26,6 +26,10 @@ for _ in $(seq 60); do
 done
 [[ $(curl -s "$BASE_URL/health") == *'"UP"'* ]] && pass "health endpoint" || fail "health endpoint"
 
+processes=$(docker compose exec -T app ps -o args)
+[[ $processes == *uwsgi* && $processes != *runserver* ]] && pass "served by uWSGI, no dev server" \
+  || fail "served by uWSGI, no dev server"
+
 login_page=$(curl -s -w '\n%{http_code}' "$BASE_URL/user/login/")
 [[ ${login_page##*$'\n'} == 200 ]] && pass "login page" || fail "login page"
 
@@ -58,13 +62,49 @@ plain=$(docker compose exec -T db psql "host=127.0.0.1 sslmode=disable user=labe
 [[ $plain == *"no encryption"* ]] && pass "database refuses logins without TLS" \
   || fail "database refuses logins without TLS"
 
-project_id=$(api -H 'Content-Type: application/json' -d '{"title": "harness smoke"}' "$BASE_URL/api/projects" \
+label_config='<View><Audio name=\"audio\" value=\"$audio\"/></View>'
+project_id=$(api -H 'Content-Type: application/json' \
+  -d "{\"title\": \"harness smoke\", \"label_config\": \"$label_config\"}" "$BASE_URL/api/projects" \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
-trap 'api -o /dev/null -X DELETE "$BASE_URL/api/projects/$project_id"; rm -f "$COOKIES"' EXIT
+trap 'api -o /dev/null -X DELETE "$BASE_URL/api/projects/$project_id"; rm -f "$COOKIES" "$AUDIO"' EXIT
 validate=$(api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{
   \"project\": $project_id, \"container\": \"source\",
   \"account_name\": \"$AZURE_BLOB_ACCOUNT_NAME\", \"account_key\": \"$AZURE_BLOB_ACCOUNT_KEY\"}" \
   "$BASE_URL/api/storages/azure/validate")
 [[ $validate == 200 ]] && pass "Azure Blob storage validates" || fail "Azure Blob storage validates (HTTP $validate)"
+
+# media must seek: audio playback asks for byte ranges, both for uploads and for files in Blob storage
+AUDIO=$(mktemp).wav
+python3 -c 'import sys, wave
+w = wave.open(sys.argv[1], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
+w.writeframes(bytes(2 * 8000 * 5)); w.close()' "$AUDIO"
+api -o /dev/null -F "file=@$AUDIO" "$BASE_URL/api/projects/$project_id/import"
+
+docker compose exec -T app python3 - <<'EOF'
+import os
+from azure.storage.blob import BlobServiceClient
+name = os.environ['AZURE_BLOB_ACCOUNT_NAME']
+client = BlobServiceClient(f'https://{name}.blob.core.windows.net',
+                           credential={'account_name': name, 'account_key': os.environ['AZURE_BLOB_ACCOUNT_KEY']})
+client.get_blob_client('source', 'smoke/fictional.wav').upload_blob(bytes(80044), overwrite=True)
+EOF
+storage_id=$(api -H 'Content-Type: application/json' -d "{
+  \"project\": $project_id, \"container\": \"source\", \"prefix\": \"smoke/\",
+  \"use_blob_urls\": true, \"presign\": false,
+  \"account_name\": \"$AZURE_BLOB_ACCOUNT_NAME\", \"account_key\": \"$AZURE_BLOB_ACCOUNT_KEY\"}" \
+  "$BASE_URL/api/storages/azure" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
+api -o /dev/null -X POST "$BASE_URL/api/storages/azure/$storage_id/sync"
+
+media=$(api "$BASE_URL/api/tasks?project=$project_id" \
+  | python3 -c 'import json, sys; print("\n".join(t["data"]["audio"] for t in json.load(sys.stdin)["tasks"]))')
+for kind in /data/upload/ /resolve/; do
+  url=$(grep -F "$kind" <<<"$media" | head -1)
+  [[ -n $url ]] || fail "media task for $kind"
+  range=$(api -o /dev/null -w '%{http_code}' -H 'Range: bytes=1000-1999' "$BASE_URL$url")
+  [[ $range == 206 ]] && pass "media seeks via $kind" || fail "media seeks via $kind (HTTP $range)"
+  anonymous=$(status "$BASE_URL$url")
+  [[ $anonymous == 401 ]] && pass "media refuses anonymous via $kind" \
+    || fail "media refuses anonymous via $kind (HTTP $anonymous)"
+done
 
 echo "All smoke checks passed against $BASE_URL"

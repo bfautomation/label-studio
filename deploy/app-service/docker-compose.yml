@@ -11,6 +11,8 @@ services:
       args:
         GIT_COMMIT: ${LABEL_STUDIO_GIT_COMMIT:-}
     image: ${HARNESS_IMAGE:-label-studio:harness-local}
+    # uWSGI alone, no nginx: the same startup command App Service is given
+    command: label-studio-uwsgi
     depends_on:
       db:
         condition: service_healthy
@@ -19,7 +21,7 @@ services:
       home-init:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:${HARNESS_HTTP_PORT:-8090}:8080"
+      - "127.0.0.1:${HARNESS_HTTP_PORT:-8090}:8000"
     environment:
       DJANGO_DB: default
       POSTGRE_HOST: db
@@ -40,6 +42,11 @@ services:
       LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK: "true"
       AZURE_BLOB_ACCOUNT_NAME: ${AZURE_BLOB_ACCOUNT_NAME:?run ./setup.sh}
       AZURE_BLOB_ACCOUNT_KEY: ${AZURE_BLOB_ACCOUNT_KEY:?run ./setup.sh}
+      # without nginx, uploaded files are served by Django (with Range support and the sandbox CSP)
+      USE_NGINX_FOR_UPLOADS: "false"
+      # App Service's front end drops requests after about 230 s; stop the worker just before that
+      UWSGI_WORKER_HARAKIRI: 220
+      UWSGI_HTTP_TIMEOUT: 230
       COLLECT_ANALYTICS: "false"
       SENTRY_DSN: ""
       FRONTEND_SENTRY_DSN: ""
@@ -114,12 +121,11 @@ services:
       - ./blob-init.py:/harness/blob-init.py:ro
       - ./.certs/ca.crt:/certs/ca.crt:ro
 
-  # App Service mounts /home as shared storage owned by root, not by the image's UID 1001.
-  # The image's permission check fails if the data directory is missing, and App Service will not create it,
-  # so the harness pre-creates it until the image does.
+  # App Service mounts /home as shared storage owned by root, not by the image's UID 1001;
+  # the app creates its data directory inside it on first start
   home-init:
     image: alpine:3.22
-    command: ["sh", "-c", "chown 0:0 /home && chmod 0777 /home && mkdir -p -m 0777 /home/label-studio"]
+    command: ["sh", "-c", "chown 0:0 /home && chmod 0777 /home"]
     volumes:
       - home:/home
 
