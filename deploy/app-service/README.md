@@ -42,12 +42,16 @@ App Service copies it. The remaining app settings:
 | `LABEL_STUDIO_HOST`, `CSRF_TRUSTED_ORIGINS` | per environment | `https://` plus the app's host name |
 | `ALLOWED_HOSTS` | per environment | the app's host name |
 | `AZURE_BLOB_ACCOUNT_NAME` | per environment | annotation storage account; the fallback when a storage connection has no key of its own |
-| `PGSSLROOTCERT` | per environment | CA bundle that verifies the PostgreSQL server |
 | `POSTGRE_PASSWORD` | secret | Key Vault reference |
 | `SECRET_KEY` | secret | Key Vault reference; must stay the same across restarts, because it signs sessions |
 | `AZURE_BLOB_ACCOUNT_KEY` | secret | Key Vault reference, so rotating the key needs no change inside Label Studio |
 
 `LABEL_STUDIO_USERNAME`, `LABEL_STUDIO_PASSWORD` and `REQUESTS_CA_BUNDLE` are harness only.
+
+The app verifies the PostgreSQL certificate against the image's own trust store (`PGSSLROOTCERT=/etc/ssl/cert.pem`),
+which includes the authorities Azure Database for PostgreSQL uses. `POSTGRE_HOST` must therefore be the server's real
+name, `<server>.postgres.database.azure.com`, not an IP address or the private-link alias. The harness mounts its
+own CA over that file.
 
 App Service configuration outside the app settings:
 

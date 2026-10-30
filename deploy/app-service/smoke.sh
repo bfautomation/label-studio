@@ -84,6 +84,17 @@ plain=$(docker compose exec -T db psql "host=127.0.0.1 sslmode=disable user=labe
   -c 'SELECT 1' 2>&1 || true)
 [[ $plain == *"no encryption"* ]] && pass "database refuses logins without TLS" \
   || fail "database refuses logins without TLS"
+# the same image with its own trust store must refuse the harness database, proving the certificate is checked
+untrusted=$(docker compose run --rm --no-deps -T -e PGPASSWORD="$APP_DB_PASSWORD" --entrypoint python3 blob-init -c '
+import psycopg
+try:
+    psycopg.connect(host="db", dbname="labelstudio", user="labelstudio", sslmode="verify-full",
+                    sslrootcert="/etc/ssl/cert.pem").close()
+    print("connected")
+except psycopg.OperationalError as error:
+    print(error)' 2>&1)
+[[ $untrusted == *"certificate verify failed"* ]] && pass "database certificate from an untrusted authority is refused" \
+  || fail "database certificate from an untrusted authority is refused ($untrusted)"
 
 label_config='<View><Audio name=\"audio\" value=\"$audio\"/></View>'
 project_id=$(api -H 'Content-Type: application/json' \
