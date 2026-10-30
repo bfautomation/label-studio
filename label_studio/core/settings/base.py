@@ -268,6 +268,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
     'core.middleware.DisableCSRF',
@@ -331,6 +332,12 @@ CORS_ALLOW_METHODS = [
     'PUT',
 ]
 ALLOWED_HOSTS = get_env_list('ALLOWED_HOSTS', default=['*'])
+
+# Sent by Django itself so the app is protected without a reverse proxy in front of it:
+# other sites may not frame our pages (clickjacking), and browsers that reached us over HTTPS keep using it for a year.
+# SecurityMiddleware only adds HSTS to secure requests, so plain-HTTP local development is unaffected.
+X_FRAME_OPTIONS = 'SAMEORIGIN'
+SECURE_HSTS_SECONDS = 31536000
 
 # Auth modules
 AUTH_USER_MODEL = 'users.User'
