@@ -90,6 +90,7 @@ jobs:
           uv run pytest -q --tb=short
           label_studio/projects/tests/test_document_upload_migration.py
           label_studio/projects/tests/test_import_status_api.py
+          label_studio/core/tests/test_security_headers.py
           label_studio/core/tests/test_version.py
           label_studio/core/tests/test_redis.py
           label_studio/tests/data_import
