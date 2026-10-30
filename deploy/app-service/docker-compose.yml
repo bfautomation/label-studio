@@ -34,15 +34,16 @@ services:
       POSTGRE_PASSWORD: ${APP_DB_PASSWORD:?run ./setup.sh}
       SECRET_KEY: ${SECRET_KEY:?run ./setup.sh}
       AZURE_BLOB_ACCOUNT_KEY: ${AZURE_BLOB_ACCOUNT_KEY:?run ./setup.sh}
-      # harness only
-      PGSSLROOTCERT: /certs/ca.crt
-      # only the harness CA is trusted, so any unexpected outbound HTTPS call fails loudly
+      # harness only: requests ignores the system trust store, so it gets the harness CA here;
+      # either way any unexpected outbound HTTPS call fails loudly
       REQUESTS_CA_BUNDLE: /certs/ca.crt
       LABEL_STUDIO_USERNAME: ${LABEL_STUDIO_USERNAME:?run ./setup.sh}
       LABEL_STUDIO_PASSWORD: ${LABEL_STUDIO_PASSWORD:?run ./setup.sh}
     volumes:
       - home:/home
       - ./.certs/ca.crt:/certs/ca.crt:ro
+      # harness only: the harness CA replaces the image's trust store, so PGSSLROOTCERT is tested as deployed
+      - ./.certs/ca.crt:/etc/ssl/cert.pem:ro
 
   frontdoor:
     image: nginx:1.28.0-alpine
