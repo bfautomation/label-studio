@@ -38,6 +38,7 @@ EOF
 
 issue_cert db db
 issue_cert blob "$ACCOUNT_NAME.blob.core.windows.net"
+issue_cert frontdoor localhost
 # containers read the keys as other users, and the files never leave this machine
 chmod 644 "$CERTS_DIR"/*
 
