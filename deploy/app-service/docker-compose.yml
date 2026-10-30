@@ -1,0 +1,129 @@
+# Harness: the Label Studio image in the shape it will run on Azure App Service.
+# One app container, PostgreSQL with TLS required, Azurite for Blob storage, no Redis and no worker.
+# Run ./setup.sh first; see README.md.
+
+name: label-studio-harness
+
+services:
+  app:
+    build:
+      context: ../..
+      args:
+        GIT_COMMIT: ${LABEL_STUDIO_GIT_COMMIT:-}
+    image: ${HARNESS_IMAGE:-label-studio:harness-local}
+    depends_on:
+      db:
+        condition: service_healthy
+      blob-init:
+        condition: service_completed_successfully
+      home-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${HARNESS_HTTP_PORT:-8090}:8080"
+    environment:
+      DJANGO_DB: default
+      POSTGRE_HOST: db
+      POSTGRE_PORT: 5432
+      POSTGRE_NAME: labelstudio
+      POSTGRE_USER: labelstudio
+      POSTGRE_PASSWORD: ${APP_DB_PASSWORD:?run ./setup.sh}
+      # libpq reads these directly; the entrypoint's POSTGRE_SSL_MODE=verify-full would demand a client certificate
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /certs/ca.crt
+      # only the harness CA is trusted, so any unexpected outbound HTTPS call fails loudly
+      REQUESTS_CA_BUNDLE: /certs/ca.crt
+      SECRET_KEY: ${SECRET_KEY:?run ./setup.sh}
+      # App Service persists only /home
+      LABEL_STUDIO_BASE_DATA_DIR: /home/label-studio
+      LABEL_STUDIO_USERNAME: ${LABEL_STUDIO_USERNAME:?run ./setup.sh}
+      LABEL_STUDIO_PASSWORD: ${LABEL_STUDIO_PASSWORD:?run ./setup.sh}
+      LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK: "true"
+      AZURE_BLOB_ACCOUNT_NAME: ${AZURE_BLOB_ACCOUNT_NAME:?run ./setup.sh}
+      AZURE_BLOB_ACCOUNT_KEY: ${AZURE_BLOB_ACCOUNT_KEY:?run ./setup.sh}
+      COLLECT_ANALYTICS: "false"
+      SENTRY_DSN: ""
+      FRONTEND_SENTRY_DSN: ""
+      JSON_LOG: 1
+    volumes:
+      - home:/home
+      - ./.certs/ca.crt:/certs/ca.crt:ro
+
+  db:
+    image: postgres:16.10-alpine
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        install -o postgres -g postgres -m 600 /certs/db.key /var/lib/postgresql/server.key &&
+        install -o postgres -g postgres -m 644 /certs/db.crt /var/lib/postgresql/server.crt &&
+        exec docker-entrypoint.sh postgres
+        -c ssl=on
+        -c ssl_cert_file=/var/lib/postgresql/server.crt
+        -c ssl_key_file=/var/lib/postgresql/server.key
+        -c ssl_min_protocol_version=TLSv1.2
+        -c hba_file=/etc/postgresql/pg_hba.conf
+        -c log_connections=on
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./setup.sh}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?run ./setup.sh}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "labelstudio"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - db:/var/lib/postgresql/data
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/10-app-role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
+      - ./.certs/db.crt:/certs/db.crt:ro
+      - ./.certs/db.key:/certs/db.key:ro
+
+  blob:
+    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+    command:
+      - azurite-blob
+      - --blobHost=0.0.0.0
+      - --blobPort=443
+      - --cert=/certs/blob.crt
+      - --key=/certs/blob.key
+      - --location=/data
+      - --skipApiVersionCheck
+    environment:
+      AZURITE_ACCOUNTS: ${AZURE_BLOB_ACCOUNT_NAME}:${AZURE_BLOB_ACCOUNT_KEY}
+    networks:
+      default:
+        # Label Studio only talks to the public Azure endpoint, so Azurite answers on that name with a test cert
+        aliases:
+          - ${AZURE_BLOB_ACCOUNT_NAME}.blob.core.windows.net
+    volumes:
+      - blob:/data
+      - ./.certs/blob.crt:/certs/blob.crt:ro
+      - ./.certs/blob.key:/certs/blob.key:ro
+
+  blob-init:
+    image: ${HARNESS_IMAGE:-label-studio:harness-local}
+    depends_on:
+      - blob
+    entrypoint: ["python3", "/harness/blob-init.py"]
+    environment:
+      AZURE_BLOB_ACCOUNT_NAME: ${AZURE_BLOB_ACCOUNT_NAME}
+      AZURE_BLOB_ACCOUNT_KEY: ${AZURE_BLOB_ACCOUNT_KEY}
+      REQUESTS_CA_BUNDLE: /certs/ca.crt
+    volumes:
+      - ./blob-init.py:/harness/blob-init.py:ro
+      - ./.certs/ca.crt:/certs/ca.crt:ro
+
+  # App Service mounts /home as shared storage owned by root, not by the image's UID 1001.
+  # The image's permission check fails if the data directory is missing, and App Service will not create it,
+  # so the harness pre-creates it until the image does.
+  home-init:
+    image: alpine:3.22
+    command: ["sh", "-c", "chown 0:0 /home && chmod 0777 /home && mkdir -p -m 0777 /home/label-studio"]
+    volumes:
+      - home:/home
+
+volumes:
+  home:
+  db:
+  blob:
