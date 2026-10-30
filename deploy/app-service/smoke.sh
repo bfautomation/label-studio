@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Smoke-check a running harness: pages, static files, API, database TLS and Blob storage.
+# Smoke-check a running harness through its HTTPS front door: serving process, pages, static files,
+# security headers and cookies, API, database TLS, Blob storage and media seeking.
 # Usage: ./smoke.sh   (after `docker compose up -d`; exits non-zero on the first failed check)
 
 set -euo pipefail
@@ -9,13 +10,16 @@ set -a
 source .env
 set +a
 
-BASE_URL=${HARNESS_BASE_URL:-http://127.0.0.1:${HARNESS_HTTP_PORT:-8090}}
+BASE_URL=${HARNESS_BASE_URL:-https://localhost:${HARNESS_HTTPS_PORT:-8443}}
+CA_CERT=$(pwd)/.certs/ca.crt
 COOKIES=$(mktemp)
 trap 'rm -f "$COOKIES"' EXIT
 
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1" >&2; exit 1; }
 
+# the front door's certificate comes from the harness CA
+curl() { command curl --cacert "$CA_CERT" "$@"; }
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 # authenticated requests carry the session cookie and, for writes, Django's CSRF token
 api() { curl -s -b "$COOKIES" -H "X-CSRFToken: $(awk '$6 == "csrftoken" {print $7}' "$COOKIES")" -H "Referer: $BASE_URL/" "$@"; }
@@ -34,14 +38,33 @@ login_page=$(curl -s -w '\n%{http_code}' "$BASE_URL/user/login/")
 [[ ${login_page##*$'\n'} == 200 ]] && pass "login page" || fail "login page"
 
 # fetch the first script the login page references, so the check follows whatever the build produced
-asset=$(grep -oE '(src|href)="/(static|react-app)/[^"]+\.(js|css)"' <<<"$login_page" | head -1 | cut -d'"' -f2)
-[[ -n $asset && $(status "$BASE_URL$asset") == 200 ]] && pass "static asset $asset" || fail "static asset ${asset:-none found}"
+# links are absolute once the public address is configured
+asset=$(grep -oE '(src|href)="[^"]*/(static|react-app)/[^"]+\.(js|css)"' <<<"$login_page" | head -1 | cut -d'"' -f2 || true)
+[[ $asset == /* ]] && asset=$BASE_URL$asset
+[[ -n $asset && $(status "$asset") == 200 ]] && pass "static asset $asset" || fail "static asset ${asset:-none found}"
 
 csrf=$(curl -s -c "$COOKIES" "$BASE_URL/user/login/" >/dev/null; awk '$6 == "csrftoken" {print $7}' "$COOKIES")
 login=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" -c "$COOKIES" -H "Referer: $BASE_URL/user/login/" \
   --data-urlencode "csrfmiddlewaretoken=$csrf" --data-urlencode "email=$LABEL_STUDIO_USERNAME" \
   --data-urlencode "password=$LABEL_STUDIO_PASSWORD" "$BASE_URL/user/login/")
-grep -q sessionid "$COOKIES" && pass "admin signs in (HTTP $login)" || fail "admin signs in (HTTP $login)"
+grep -q sessionid "$COOKIES" && pass "admin signs in over HTTPS (HTTP $login)" \
+  || fail "admin signs in over HTTPS (HTTP $login)"
+
+for cookie in sessionid csrftoken; do
+  [[ $(awk -v name="$cookie" '$6 == name {print $4}' "$COOKIES") == TRUE ]] && pass "$cookie cookie is HTTPS-only" \
+    || fail "$cookie cookie is HTTPS-only"
+done
+
+headers=$(curl -s -D - -o /dev/null "$BASE_URL/user/login/")
+grep -qi '^strict-transport-security: max-age=31536000' <<<"$headers" && pass "HSTS header" || fail "HSTS header"
+grep -qi '^x-frame-options: SAMEORIGIN' <<<"$headers" && pass "frame protection header" \
+  || fail "frame protection header"
+# the front door overwrites the HTTPS note, so a client claiming plain HTTP is still treated as HTTPS
+spoofed=$(curl -s -D - -o /dev/null -H 'X-Forwarded-Proto: http' "$BASE_URL/user/login/")
+grep -qi '^strict-transport-security' <<<"$spoofed" && pass "front door sets the HTTPS note itself" \
+  || fail "front door sets the HTTPS note itself"
+[[ $(status -H 'Host: unknown.example' "$BASE_URL/health") == 400 ]] && pass "unknown host name is refused" \
+  || fail "unknown host name is refused"
 
 [[ $(api -o /dev/null -w '%{http_code}' "$BASE_URL/api/projects") == 200 ]] && pass "API with session" \
   || fail "API with session"
@@ -100,9 +123,10 @@ media=$(api "$BASE_URL/api/tasks?project=$project_id" \
 for kind in /data/upload/ /resolve/; do
   url=$(grep -F "$kind" <<<"$media" | head -1)
   [[ -n $url ]] || fail "media task for $kind"
-  range=$(api -o /dev/null -w '%{http_code}' -H 'Range: bytes=1000-1999' "$BASE_URL$url")
+  [[ $url == /* ]] && url=$BASE_URL$url
+  range=$(api -o /dev/null -w '%{http_code}' -H 'Range: bytes=1000-1999' "$url")
   [[ $range == 206 ]] && pass "media seeks via $kind" || fail "media seeks via $kind (HTTP $range)"
-  anonymous=$(status "$BASE_URL$url")
+  anonymous=$(status "$url")
   [[ $anonymous == 401 ]] && pass "media refuses anonymous via $kind" \
     || fail "media refuses anonymous via $kind (HTTP $anonymous)"
 done
