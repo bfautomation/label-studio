@@ -55,3 +55,26 @@ def annotate_ground_truth_number(queryset):
 def annotate_skipped_annotations_number(queryset):
     subquery = Annotation.objects.filter(Q(project=OuterRef('pk')) & Q(was_cancelled=True)).values('id')
     return queryset.annotate(skipped_annotations_number=SQCount(subquery))
+
+
+def delete_projects_stored_files_on_commit(projects):
+    """Schedule deletion of the files kept in storage for these projects, once their deletion is committed.
+
+    Call it before deleting projects with signals disconnected, which skips the per-record file cleanup receivers.
+    """
+    from core.utils.db import delete_stored_file_on_commit
+    from data_export.models import ConvertedFormat, Export
+    from data_import.models import DocumentConversionArtifact, FileUpload
+
+    stored_files = []
+    for model, project_field in (
+        (FileUpload, 'project'),
+        (Export, 'project'),
+        (ConvertedFormat, 'project'),
+        (DocumentConversionArtifact, 'file_upload__project'),
+    ):
+        file_fields = [field.name for field in model._meta.fields if field.get_internal_type() == 'FileField']
+        for record in model.objects.filter(**{f'{project_field}__in': projects}).only(*file_fields):
+            stored_files += [getattr(record, name) for name in file_fields]
+    for stored_file in stored_files:
+        delete_stored_file_on_commit(stored_file)

@@ -270,3 +270,21 @@ def signal_clear_column_presence_cache(**_kwargs):
     so that the next migration can introspect the new column using has_column_cached()."""
     logger.debug('Clearing column presence cache in post_migrate signal')
     _column_presence_cache.clear()
+
+
+def delete_stored_file_on_commit(field_file, using=None):
+    """Delete the file behind a FileField once the deletion of its record is committed.
+
+    A rolled-back deletion keeps the file; a file that cannot be deleted is logged rather than failing the deletion.
+    """
+    if not field_file:
+        return
+    storage, name = field_file.storage, field_file.name
+
+    def delete():
+        try:
+            storage.delete(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('Failed to delete stored file %s: %s', name, exc)
+
+    transaction.on_commit(delete, using=using)
