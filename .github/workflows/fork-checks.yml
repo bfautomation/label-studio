@@ -93,6 +93,7 @@ jobs:
           label_studio/core/tests/test_security_headers.py
           label_studio/core/tests/test_settings.py
           label_studio/data_export/tests/test_file_cleanup.py
+          label_studio/organizations/tests/test_member_removal.py
           label_studio/core/tests/test_version.py
           label_studio/core/tests/test_redis.py
           label_studio/tests/data_import
