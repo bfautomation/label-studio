@@ -779,7 +779,7 @@ DATA_UNDEFINED_NAME = '$undefined$'
 LICENSE = {}
 VERSIONS = {}
 VERSION_EDITION = 'Community'
-LATEST_VERSION_CHECK = get_bool_env('LATEST_VERSION_CHECK', True)
+LATEST_VERSION_CHECK = get_bool_env('LATEST_VERSION_CHECK', False)
 VERSIONS_CHECK_TIME = 0
 ALLOW_ORGANIZATION_WEBHOOKS = get_bool_env('ALLOW_ORGANIZATION_WEBHOOKS', False)
 CONVERTER_DOWNLOAD_RESOURCES = get_bool_env('CONVERTER_DOWNLOAD_RESOURCES', True)
@@ -924,8 +924,9 @@ FEATURE_FLAGS_OFFLINE = get_bool_env('FEATURE_FLAGS_OFFLINE', True)
 # default value for feature flags (if not overridden by environment or client)
 FEATURE_FLAGS_DEFAULT_VALUE = False
 
-# Whether to send analytics telemetry data. Fall back to old lowercase name for legacy compatibility.
-COLLECT_ANALYTICS = get_bool_env('COLLECT_ANALYTICS', get_bool_env('collect_analytics', True))
+# Whether to send analytics telemetry data; off unless deliberately enabled.
+# Fall back to old lowercase name for legacy compatibility.
+COLLECT_ANALYTICS = get_bool_env('COLLECT_ANALYTICS', get_bool_env('collect_analytics', False))
 
 # Strip harmful content from SVG files by default
 SVG_SECURITY_CLEANUP = get_bool_env('SVG_SECURITY_CLEANUP', False)
