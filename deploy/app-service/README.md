@@ -62,6 +62,43 @@ configuration outside the app settings:
 - Startup command `label-studio-uwsgi`.
 - HTTPS only; the front door adds `X-Forwarded-Proto`, which the app trusts.
 
+## Media and tasks from Blob storage
+
+Media files and the JSON task files that refer to them live in a Blob container (`source` in the harness). Label
+Studio only reads it.
+
+1. Put each media file in the container and leave it unchanged there.
+2. Write a JSON task file for it into a folder of its own, for example:
+
+   ```json
+   {"data": {"audio": "azure-blob://source/<path to the media file>"}}
+   ```
+
+   `audio` must use this `azure-blob://<container>/…` form. It never expires and holds no secret; when a signed-in
+   annotator opens the task, Label Studio turns it into a link to itself and streams the file. The other fields are
+   whatever the project's labelling configuration asks for.
+3. The project needs an import connection on that container: container prefix set to the task-file folder, import
+   method "Tasks - Treat each JSON or JSONL file as a task definition", no account key (the app's own
+   `AZURE_BLOB_ACCOUNT_KEY` is used). Without a connection on that container the media cannot play, even for tasks
+   imported through the API.
+4. An admin presses Sync on the import connection. Syncing again only adds new task files; it never duplicates tasks.
+
+Exports keep `audio` exactly as imported, so results can be matched back to their media.
+
+## Exporting final labels
+
+Export connections write to storage only when someone presses Sync; they never copy labels as people save them and
+never delete anything. Making labels final is therefore one deliberate step:
+
+1. Annotators and reviewers finish and stop editing. Label Studio cannot lock a project, so this is an agreement,
+   not a setting. Nothing reaches the export container while they work.
+2. An admin adds an export connection on the export container (`exports` in the harness; once per project, a prefix
+   of its own, "can delete objects" off) and presses Sync. Label Studio writes one file per annotation, named by the
+   annotation's number; each holds the annotation and its task, including the `audio` reference.
+
+Pressing Sync again writes the labels as they are at that moment and overwrites the earlier files. Deleting an
+annotation in Label Studio leaves its file in storage.
+
 ## Limits without a worker
 
 Without Redis or a worker, imports, storage syncs and exports run inside the web request that starts them.
