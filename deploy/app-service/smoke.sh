@@ -116,7 +116,8 @@ validate=$(api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json
 [[ $validate == 200 ]] && pass "Azure Blob storage validates" || fail "Azure Blob storage validates (HTTP $validate)"
 
 # media must seek: audio playback asks for byte ranges, both for uploads and for files in Blob storage
-# the storage connection asks for pre-signed links, the risky default; the app must still stream through itself
+# Blob tasks arrive as JSON task files referring to their media file, as in real use; the storage
+# connection asks for pre-signed links, the risky default, and the app must still stream through itself
 AUDIO=$(mktemp).wav
 python3 -c 'import sys, wave
 w = wave.open(sys.argv[1], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
@@ -129,11 +130,14 @@ from azure.storage.blob import BlobServiceClient
 name = os.environ['AZURE_BLOB_ACCOUNT_NAME']
 client = BlobServiceClient(f'https://{name}.blob.core.windows.net',
                            credential={'account_name': name, 'account_key': os.environ['AZURE_BLOB_ACCOUNT_KEY']})
-client.get_blob_client('source', 'smoke/fictional.wav').upload_blob(bytes(80044), overwrite=True)
+container = client.get_container_client('source')
+container.upload_blob('smoke/media/fictional.wav', bytes(80044), overwrite=True)
+task = '{"data": {"audio": "azure-blob://source/smoke/media/fictional.wav"}}'
+container.upload_blob('smoke/tasks/fictional.json', task, overwrite=True)
 EOF
 storage_id=$(api -H 'Content-Type: application/json' -d "{
-  \"project\": $project_id, \"container\": \"source\", \"prefix\": \"smoke/\",
-  \"use_blob_urls\": true, \"presign\": true,
+  \"project\": $project_id, \"container\": \"source\", \"prefix\": \"smoke/tasks/\",
+  \"use_blob_urls\": false, \"presign\": true,
   \"account_name\": \"$AZURE_BLOB_ACCOUNT_NAME\", \"account_key\": \"$AZURE_BLOB_ACCOUNT_KEY\"}" \
   "$BASE_URL/api/storages/azure" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
 api -o /dev/null -X POST "$BASE_URL/api/storages/azure/$storage_id/sync"
