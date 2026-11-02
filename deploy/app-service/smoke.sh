@@ -66,6 +66,12 @@ grep -qi '^strict-transport-security' <<<"$spoofed" && pass "front door sets the
 [[ $(status -H 'Host: unknown.example' "$BASE_URL/health") == 400 ]] && pass "unknown host name is refused" \
   || fail "unknown host name is refused"
 
+# the browser is told not to report: no analytics script on the login page, analytics and Sentry off once signed in
+signed_in_page=$(api "$BASE_URL/projects/")
+! grep -q googletagmanager <<<"$login_page" && grep -q 'collect_analytics: false' <<<"$signed_in_page" \
+  && grep -q 'sentry_dsn: null' <<<"$signed_in_page" && pass "pages tell the browser not to report" \
+  || fail "pages tell the browser not to report"
+
 [[ $(api -o /dev/null -w '%{http_code}' "$BASE_URL/api/projects") == 200 ]] && pass "API with session" \
   || fail "API with session"
 [[ $(status "$BASE_URL/api/projects") == 401 ]] && pass "API rejects anonymous" || fail "API rejects anonymous"
@@ -143,5 +149,11 @@ for kind in /data/upload/ /resolve/; do
   [[ $anonymous == 401 ]] && pass "media refuses anonymous via $kind" \
     || fail "media refuses anonymous via $kind (HTTP $anonymous)"
 done
+
+# every name the app looked up since it started must belong to the harness (see egress/sitecustomize.py)
+outside=$(docker compose exec -T app sh -c 'sort -u /tmp/outbound-lookups.log' \
+  | grep -vxF -e db -e "$AZURE_BLOB_ACCOUNT_NAME.blob.core.windows.net" || true)
+[[ -z $outside ]] && pass "app contacted nothing outside the harness" \
+  || fail "app contacted nothing outside the harness: $(tr '\n' ' ' <<<"$outside")"
 
 echo "All smoke checks passed against $BASE_URL"
