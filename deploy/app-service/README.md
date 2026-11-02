@@ -22,6 +22,7 @@ docker compose up -d --build
 ./smoke.sh                   # serving, pages, security headers and cookies, API, database TLS, Blob storage, media
 ./persistence.sh             # work and sign-ins survive the app container being replaced (restarts the app)
 ./capacity.sh                # how large an import, sync or export fits in one request (takes a few minutes)
+./qualify.sh IMAGE           # fresh harness on exactly IMAGE, smoke and persistence checks, then remove it all
 docker compose down -v       # remove containers and all harness data
 ```
 
@@ -33,6 +34,21 @@ certificate authority unless you trust `.certs/ca.crt`. Sign in with `LABEL_STUD
 The app trusts only the harness CA, so an unexpected outbound HTTPS call fails instead of leaving the machine.
 The proof is separate: `egress/sitecustomize.py` (harness only) records every name the app's Python processes look
 up, and `smoke.sh` fails if any of them lies outside the harness.
+
+## Image pipeline
+
+`azure-pipelines-image.yml` (repository root, Azure DevOps) runs on every push to `main`:
+
+1. **Qualify**, with no Azure access: builds the image for App Service (`linux/amd64`), runs `./qualify.sh` on it and
+   keeps the image file, its checksum, image ID and commit.
+2. **Publish**, only after approval in the `publish-image` environment: checks it is the qualified image and
+   the expected registry, pushes it as `label-studio:<commit>-<run>`, reads the digest back and records
+   `<registry>.azurecr.io/label-studio@sha256:…` with the commit in the `published-image` artifact. Without approval
+   nothing is published.
+
+It needs, outside this repository: the variable group `publish-image` (`registryName`,
+`registryResourceGroup`, `subscriptionId`), the service connection `publish-image`, the environment
+`publish-image` and the registry itself.
 
 ## App Service settings
 
