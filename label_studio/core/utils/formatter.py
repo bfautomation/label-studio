@@ -11,3 +11,7 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
         if request and 'X-Request-ID' in request.headers:
             request_id = request.headers['X-Request-ID']
         log_record['request_id'] = request_id
+        # log the request as method and path only: query strings can carry secrets such as invite tokens
+        logged_request = log_record.get('request')
+        if hasattr(logged_request, 'path'):
+            log_record['request'] = f'{logged_request.method} {logged_request.path}'

@@ -54,7 +54,8 @@ LOGGING = {
         'rules': {'level': 'WARNING'},
         'django': {
             'handlers': ['console'],
-            # 'propagate': True,
+            # the root logger has the same handler, so propagating would print every line twice
+            'propagate': False,
         },
         'django_auth_ldap': {'level': os.environ.get('LOG_LEVEL', 'DEBUG')},
         'rq.worker': {
