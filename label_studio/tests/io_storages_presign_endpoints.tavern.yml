@@ -4,6 +4,7 @@ strict: false
 marks:
   - usefixtures:
       - django_live_url
+      - allow_presigned_urls
 stages:
 
   - id: signup
@@ -40,6 +41,7 @@ strict: false
 marks:
   - usefixtures:
       - django_live_url
+      - allow_presigned_urls
 stages:
 
   - id: signup
@@ -79,6 +81,7 @@ strict: false
 marks:
   - usefixtures:
       - django_live_url
+      - allow_presigned_urls
 stages:
 
   - id: signup
@@ -114,6 +117,7 @@ strict: false
 marks:
   - usefixtures:
       - django_live_url
+      - allow_presigned_urls
 stages:
 
   - id: signup

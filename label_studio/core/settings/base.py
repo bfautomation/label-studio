@@ -950,6 +950,9 @@ EXPORT_STORAGE_PRESIGN_TTL_MINUTES = int(get_env('EXPORT_STORAGE_PRESIGN_TTL_MIN
 # an org that requires proxy-only access proxying these objects through Label
 # Studio's own auth, exactly as the presign flag does on import connections.
 EXPORT_STORAGE_PRESIGN = get_bool_env('EXPORT_STORAGE_PRESIGN', default=True)
+# Whether storage connections may hand browsers pre-signed links at all. Off: media is always streamed through
+# Label Studio with its sign-in and permission checks, whatever a connection's own presign flag says.
+ALLOW_PRESIGNED_URLS = get_bool_env('ALLOW_PRESIGNED_URLS', default=False)
 
 STORAGE_IN_PROGRESS_TIMER = float(get_env('STORAGE_IN_PROGRESS_TIMER', 5.0))
 # Absolute wall-clock stale timeout (seconds) for import/reimport when Redis is down

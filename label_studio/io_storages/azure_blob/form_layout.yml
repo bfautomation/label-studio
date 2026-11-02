@@ -70,7 +70,7 @@ ImportStorage:
             name: presign
             label: "Use pre-signed URLs (On)\n Proxy through the platform (Off)"
             description: "When pre-signed URLs are enabled, all data bypasses the platform and user browsers directly read data from storage"
-            value: true
+            value: false
       - fields:
           - type: counter
             name: presign_ttl
