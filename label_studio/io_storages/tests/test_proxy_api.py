@@ -18,6 +18,12 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from tasks.models import Task
 
 
+@pytest.fixture(autouse=True)
+def allow_presigned_urls(settings):
+    # these tests cover the redirect to pre-signed links, which only happens when the app allows them
+    settings.ALLOW_PRESIGNED_URLS = True
+
+
 class TestResolveStorageUriAPIMixin(unittest.TestCase):
     def setUp(self):
         self.mixin = ResolveStorageUriAPIMixin()

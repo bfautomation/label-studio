@@ -102,7 +102,7 @@ class ResolveStorageUriAPIMixin:
         if not hasattr(storage, 'presign'):
             logger.error(f'Storage {storage} does not support presign URLs')
             return Response(status=status.HTTP_404_NOT_FOUND)
-        presign = storage.presign
+        presign = storage.presign and settings.ALLOW_PRESIGNED_URLS
 
         # Check if storage should use presigned URLs;
         # It's important to have this check here, because it increases security:
