@@ -292,6 +292,8 @@ def async_export_annotation_to_gcs_storages(annotation: 'Annotation | int'):
 
 @receiver(post_save, sender=Annotation)
 def export_annotation_to_gcs_storages(sender, instance, **kwargs):
+    if not settings.EXPORT_STORAGE_SYNC_ON_SAVE:
+        return
     storages = getattr(instance.project, 'io_storages_gcsexportstorages', None)
     if storages and storages.exists():  # avoid excess jobs in rq
         transaction.on_commit(lambda: start_job_async_or_sync(async_export_annotation_to_gcs_storages, instance.pk))
@@ -299,6 +301,8 @@ def export_annotation_to_gcs_storages(sender, instance, **kwargs):
 
 @receiver(pre_delete, sender=Annotation)
 def delete_annotation_from_gcs_storages(sender, instance, **kwargs):
+    if not settings.EXPORT_STORAGE_SYNC_ON_SAVE:
+        return
     links = GCSExportStorageLink.objects.filter(annotation=instance).select_related('storage')
     for link in links:
         storage = link.storage

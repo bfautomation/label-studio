@@ -953,6 +953,9 @@ EXPORT_STORAGE_PRESIGN = get_bool_env('EXPORT_STORAGE_PRESIGN', default=True)
 # Whether storage connections may hand browsers pre-signed links at all. Off: media is always streamed through
 # Label Studio with its sign-in and permission checks, whatever a connection's own presign flag says.
 ALLOW_PRESIGNED_URLS = get_bool_env('ALLOW_PRESIGNED_URLS', default=False)
+# Whether export connections copy annotations as they are saved and delete them as they are deleted. Off: export
+# storage only changes when someone syncs the connection, so labels leave Label Studio in one deliberate step.
+EXPORT_STORAGE_SYNC_ON_SAVE = get_bool_env('EXPORT_STORAGE_SYNC_ON_SAVE', default=False)
 
 STORAGE_IN_PROGRESS_TIMER = float(get_env('STORAGE_IN_PROGRESS_TIMER', 5.0))
 # Absolute wall-clock stale timeout (seconds) for import/reimport when Redis is down

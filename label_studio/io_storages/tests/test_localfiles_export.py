@@ -6,6 +6,7 @@ from projects.tests.factories import ProjectFactory
 from tasks.tests.factories import AnnotationFactory, TaskFactory
 
 
+@pytest.mark.usefixtures('export_storage_sync_on_save')
 @pytest.mark.django_db
 def test_annotation_delete_removes_local_file_when_allowed(settings, tmp_path):
     """Ensure annotation deletion removes local export artifacts when permitted.
