@@ -21,6 +21,7 @@ cd deploy/app-service
 docker compose up -d --build
 ./smoke.sh                   # serving, pages, security headers and cookies, API, database TLS, Blob storage, media
 ./persistence.sh             # work and sign-ins survive the app container being replaced (restarts the app)
+./capacity.sh                # how large an import, sync or export fits in one request (takes a few minutes)
 docker compose down -v       # remove containers and all harness data
 ```
 
@@ -60,6 +61,28 @@ configuration outside the app settings:
 
 - Startup command `label-studio-uwsgi`.
 - HTTPS only; the front door adds `X-Forwarded-Proto`, which the app trusts.
+
+## Limits without a worker
+
+Without Redis or a worker, imports, storage syncs and exports run inside the web request that starts them.
+uWSGI stops a request after 220 s and App Service's front door gives up after about 230 s; a request that runs
+longer fails part-way. `./capacity.sh` measures how long each takes at growing sizes and stops a scenario at the
+first size slower than the budget (110 s, half the limit). It runs unchanged against App Service;
+those results replace the harness numbers below.
+
+Harness, 2 November 2026 (database and storage on the same machine), 4 uWSGI workers:
+
+| Tasks | Import (with annotations) | JSON export | Storage sync |
+|---:|---:|---:|---:|
+| 100 | 0.1 s | 0.1 s | 0.3 s |
+| 1,000 | 0.7 s | 1.0 s | 1.6 s |
+| 10,000 | 6.4 s | 11.2 s (10 MiB) | 15.3 s |
+
+All three grow in proportion to the number of tasks and stay far below the budget at 10,000. Saving one annotation
+takes about 0.04 s. While a long request runs it occupies one of the 4 workers.
+
+Without Redis the fork's document upload (`/api/projects/<id>/upload-files`) refuses with 503, "Document upload queue
+is unavailable", and creates nothing; ordinary imports are unaffected.
 
 ## Accounts
 
