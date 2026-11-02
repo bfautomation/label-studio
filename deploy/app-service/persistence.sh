@@ -24,7 +24,6 @@ cleanup() {
 trap cleanup EXIT
 
 pass() { echo "PASS  $1"; }
-warn() { echo "WARN  $1"; }
 fail() { echo "FAIL  $1" >&2; exit 1; }
 
 curl() { command curl --cacert "$CA_CERT" "$@"; }
@@ -90,10 +89,10 @@ docker compose exec -T app test ! -e /home/label-studio/.env \
 # --- deleting the project must remove its uploaded file from persistent storage
 api -o /dev/null -X DELETE "$BASE_URL/api/projects/$project_id"
 project_id=
-if docker compose exec -T app test ! -e "$upload_path"; then
-  pass "deleting the project removes its uploaded file"
-else
-  warn "deleting the project left $upload_path behind"
-fi
+docker compose exec -T app test ! -e "$upload_path" \
+  && pass "deleting the project removes its uploaded file" || fail "deleting the project removes its uploaded file"
+# a download export must not keep a copy of the data in persistent storage
+leftovers=$(docker compose exec -T app find /home/label-studio/export -type f)
+[[ -z $leftovers ]] && pass "exports leave no copy of the data behind" || fail "exports leave no copy of the data behind"
 
 echo "All persistence checks passed against $BASE_URL"
