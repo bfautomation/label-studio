@@ -84,6 +84,7 @@ def test_azure_export_uses_race_safe_link_create(mock_create_link, mock_get_cont
     mock_create_link.assert_called_once_with(annotation, storage)
 
 
+@pytest.mark.usefixtures('export_storage_sync_on_save')
 @patch('io_storages.gcs.models.GCSExportStorage.delete_annotation')
 def test_gcs_pre_delete_signal_calls_delete_when_enabled(mock_delete):
     project = ProjectFactory()
@@ -110,6 +111,7 @@ def test_gcs_pre_delete_signal_skips_when_disabled(mock_delete):
     mock_delete.assert_not_called()
 
 
+@pytest.mark.usefixtures('export_storage_sync_on_save')
 @patch('io_storages.azure_blob.models.AzureBlobExportStorage.delete_annotation')
 def test_azure_pre_delete_signal_calls_delete_when_enabled(mock_delete):
     project = ProjectFactory()

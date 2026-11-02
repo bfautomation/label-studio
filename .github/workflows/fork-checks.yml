@@ -95,6 +95,7 @@ jobs:
           label_studio/data_export/tests/test_file_cleanup.py
           label_studio/organizations/tests/test_member_removal.py
           label_studio/tests/test_presign_storage_data.py
+          label_studio/io_storages/tests/test_export_on_sync_only.py
           label_studio/core/tests/test_version.py
           label_studio/core/tests/test_redis.py
           label_studio/tests/data_import

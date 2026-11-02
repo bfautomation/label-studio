@@ -11,7 +11,6 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from tasks.models import Task
 from users.models import User
 
-
 pytestmark = pytest.mark.usefixtures('allow_presigned_urls')
 
 
