@@ -20,6 +20,7 @@ cd deploy/app-service
 ./setup.sh                   # test CA, certificates and local secrets in .certs/ and .env
 docker compose up -d --build
 ./smoke.sh                   # serving, pages, security headers and cookies, API, database TLS, Blob storage, media
+./persistence.sh             # work and sign-ins survive the app container being replaced (restarts the app)
 docker compose down -v       # remove containers and all harness data
 ```
 
@@ -58,6 +59,23 @@ configuration outside the app settings:
 
 - Startup command `label-studio-uwsgi`.
 - HTTPS only; the front door adds `X-Forwarded-Proto`, which the app trusts.
+
+## What persists
+
+App Service replaces the container on every restart and deployment; only `/home`, PostgreSQL and Blob storage
+survive. `./persistence.sh` proves nothing is lost: it creates a project with an uploaded file and an
+annotation, replaces the app container and checks everything with the sign-in from before. Sign-ins survive because
+sessions are signed with `SECRET_KEY`, which therefore must never change between restarts.
+
+Back up:
+
+- the PostgreSQL database;
+- `/home/label-studio/media` (uploaded files and exports) and `/home/label-studio/export`;
+- the `source` and `exports` Blob containers.
+
+Nothing else needs keeping: the app regenerates its version file at start-up, and uWSGI's process file lives in
+`/tmp`. The harness cannot reproduce App Service's network-backed `/home`, so its file permissions are checked on the
+real platform.
 
 ## Upgrading
 
