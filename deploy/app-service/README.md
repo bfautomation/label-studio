@@ -61,6 +61,36 @@ configuration outside the app settings:
 - Startup command `label-studio-uwsgi`.
 - HTTPS only; the front door adds `X-Forwarded-Proto`, which the app trusts.
 
+## Accounts
+
+There is no email and no shell into the container on App Service, so accounts are managed in the app: through the
+organization's invite link, and through Django admin at `/admin/`, which superusers can open.
+
+### First deployment: the first admin
+
+1. Store a strong password as a Key Vault secret.
+2. For the first deployment only, add two app settings: `LABEL_STUDIO_USERNAME` set to the first admin's email, and
+   `LABEL_STUDIO_PASSWORD` set to a Key Vault reference to that secret.
+3. Deploy. At start-up the container creates the organization and this admin as a superuser; the log shows
+   `label-studio init completed`.
+4. Sign in as that admin and change the password, so the Key Vault copy is no longer the live one.
+5. Give a second person the invite link (see below). Once they have signed up, open `/admin/` → Users → that person,
+   tick **Staff status** and **Superuser status**, and save. Two superusers mean either can reset the other's
+   password.
+6. Remove both app settings, delete the Key Vault secret and restart. Both admins can still sign in. While the
+   settings are present, start-up re-creates that admin if the account has been deleted.
+7. Reset the invite link.
+
+### Day to day
+
+- **Inviting people:** share the organization's invite link and reset it once everyone has joined. After a reset the
+  old link no longer works.
+- **Offboarding:** in `/admin/` → Users, untick **Active**. Removing someone from the organization does the same. From
+  then on their browser session, existing API tokens and attempts to sign in or sign up again are all refused.
+- **Forgotten password:** another superuser sets a new one in `/admin/` → Users → that user → change password.
+- **Changing `SECRET_KEY`:** signs everyone out and stops every personal access token working; people sign in again
+  and create new tokens.
+
 ## What persists
 
 App Service replaces the container on every restart and deployment; only `/home`, PostgreSQL and Blob storage
