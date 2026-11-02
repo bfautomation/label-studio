@@ -1,0 +1,139 @@
+# Build, qualify and publish the image (see deploy/app-service/README.md).
+# Every push to main is built for App Service (linux/amd64) and qualified with deploy/app-service/qualify.sh.
+# The image is pushed to the registry only after approval in the publish-image environment; without approval
+# nothing is published. The registry is identified by variables in an Azure DevOps variable group, never in
+# this public repository.
+
+trigger:
+  branches:
+    include:
+      - main
+pr: none
+
+variables:
+  candidate: label-studio:$(Build.SourceVersion)
+
+stages:
+  - stage: Qualify
+    displayName: Build and qualify the image
+    jobs:
+      - job: qualify
+        displayName: Build for linux/amd64 and run the harness
+        pool:
+          vmImage: ubuntu-24.04
+        timeoutInMinutes: 90
+        steps:
+          - checkout: self
+            fetchDepth: 1
+            persistCredentials: false
+
+          - bash: |
+              set -euo pipefail
+              plugin_directory="$HOME/.docker/cli-plugins"
+              mkdir -p "$plugin_directory"
+              compose_download=$(mktemp "$AGENT_TEMPDIRECTORY/compose.XXXXXX")
+              trap 'rm -f -- "$compose_download"' EXIT
+              curl --fail --silent --show-error --location --max-time 120 \
+                https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-linux-x86_64 \
+                --output "$compose_download"
+              printf '%s  %s\n' \
+                47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0 \
+                "$compose_download" | sha256sum --check --status
+              chmod 755 "$compose_download"
+              mv "$compose_download" "$plugin_directory/docker-compose"
+              test "$(docker compose version --short)" = 5.6.1
+            displayName: Install checksum-pinned Docker Compose
+
+          - bash: |
+              set -euo pipefail
+              docker build --platform linux/amd64 --build-arg GIT_COMMIT="$BUILD_SOURCEVERSION" --tag "$CANDIDATE" .
+            displayName: Build the image
+            env:
+              CANDIDATE: $(candidate)
+
+          - bash: deploy/app-service/qualify.sh "$CANDIDATE"
+            displayName: Qualify the image with the harness
+            env:
+              CANDIDATE: $(candidate)
+
+          - bash: |
+              set -euo pipefail
+              output="$BUILD_ARTIFACTSTAGINGDIRECTORY/qualified-image"
+              mkdir -p "$output"
+              docker save --output "$output/image.tar" "$CANDIDATE"
+              (cd "$output" && sha256sum image.tar > image.tar.sha256)
+              docker image inspect --format '{{.Id}}' "$CANDIDATE" > "$output/image-id.txt"
+              printf '%s\n' "$BUILD_SOURCEVERSION" > "$output/commit.txt"
+            displayName: Save the qualified image
+            env:
+              CANDIDATE: $(candidate)
+
+          - publish: $(Build.ArtifactStagingDirectory)/qualified-image
+            artifact: qualified-image
+            displayName: Keep the qualified image for publication
+
+  - stage: Publish
+    displayName: Publish the qualified image
+    dependsOn: Qualify
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      # registryName, registryResourceGroup and subscriptionId; only this stage can read them
+      - group: publish-image
+    jobs:
+      - deployment: publish
+        displayName: Push to the registry and record the digest
+        pool:
+          vmImage: ubuntu-24.04
+        environment: publish-image
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: qualified-image
+
+                - task: AzureCLI@2
+                  displayName: Push the qualified image and read back its digest
+                  inputs:
+                    azureSubscription: publish-image
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      input="$PIPELINE_WORKSPACE/qualified-image"
+                      output="$BUILD_ARTIFACTSTAGINGDIRECTORY/published-image"
+                      mkdir -p "$output"
+
+                      # publish exactly the image that was qualified
+                      (cd "$input" && sha256sum --check --status image.tar.sha256)
+                      docker load --input "$input/image.tar" >/dev/null
+                      commit=$(cat "$input/commit.txt")
+                      local_image="label-studio:$commit"
+                      test "$(docker image inspect --format '{{.Id}}' "$local_image")" = "$(cat "$input/image-id.txt")"
+
+                      # and only to the registry the variable group names
+                      registry_id=/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$REGISTRY_RESOURCE_GROUP
+                      registry_id=$registry_id/providers/Microsoft.ContainerRegistry/registries/$REGISTRY_NAME
+                      actual_id=$(az acr show --subscription "$SUBSCRIPTION_ID" --name "$REGISTRY_NAME" \
+                        --query id -o tsv)
+                      test "${actual_id,,}" = "${registry_id,,}"
+
+                      az acr login --subscription "$SUBSCRIPTION_ID" --name "$REGISTRY_NAME" --only-show-errors
+                      tag="$commit-$BUILD_BUILDID"
+                      docker tag "$local_image" "$REGISTRY_NAME.azurecr.io/label-studio:$tag"
+                      docker push "$REGISTRY_NAME.azurecr.io/label-studio:$tag" >/dev/null
+                      digest=$(az acr repository show --subscription "$SUBSCRIPTION_ID" --name "$REGISTRY_NAME" \
+                        --image "label-studio:$tag" --query digest -o tsv)
+                      [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+
+                      printf '%s.azurecr.io/label-studio@%s\n' "$REGISTRY_NAME" "$digest" > "$output/image.txt"
+                      cp "$input/commit.txt" "$output/commit.txt"
+                      echo "Published $(cat "$output/image.txt") from commit $commit"
+                  env:
+                    SUBSCRIPTION_ID: $(subscriptionId)
+                    REGISTRY_NAME: $(registryName)
+                    REGISTRY_RESOURCE_GROUP: $(registryResourceGroup)
+
+                - publish: $(Build.ArtifactStagingDirectory)/published-image
+                  artifact: published-image
+                  displayName: Record the published image for the infrastructure pipeline
