@@ -76,10 +76,10 @@ signed_in_page=$(api "$BASE_URL/projects/")
   || fail "API with session"
 [[ $(status "$BASE_URL/api/projects") == 401 ]] && pass "API rejects anonymous" || fail "API rejects anonymous"
 
-# the signup page always renders; the server must refuse the submission without an invite token
+# the signup page always renders; the server must refuse the submission without a valid invite token
 signup=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" -H "Referer: $BASE_URL/user/signup/" \
   --data-urlencode "csrfmiddlewaretoken=$csrf" --data-urlencode "email=smoke-$RANDOM@example.com" \
-  --data-urlencode "password=Smoke-$RANDOM-Password" "$BASE_URL/user/signup/")
+  --data-urlencode "password=Smoke-$RANDOM-Password" "$BASE_URL/user/signup/?token=not-the-invite-token")
 [[ $signup == 403 ]] && pass "signup without invite is refused" || fail "signup without invite is refused (HTTP $signup)"
 
 # every app login is logged with its TLS state; any login without TLS must have been refused
@@ -154,6 +154,14 @@ for kind in /data/upload/ /resolve/; do
   [[ $anonymous == 401 ]] && pass "media refuses anonymous via $kind" \
     || fail "media refuses anonymous via $kind (HTTP $anonymous)"
 done
+
+# no secret reaches the app's log, including tokens carried in addresses such as the refused signup above
+leaked=()
+for secret in "$POSTGRES_PASSWORD" "$APP_DB_PASSWORD" "$SECRET_KEY" "$AZURE_BLOB_ACCOUNT_KEY" "$LABEL_STUDIO_PASSWORD" \
+  "$(awk '$6 == "sessionid" {print $7}' "$COOKIES")" "$csrf" not-the-invite-token; do
+  docker compose logs app 2>/dev/null | grep -qF -- "$secret" && leaked+=("${secret:0:6}…")
+done
+[[ ${#leaked[@]} == 0 ]] && pass "app log holds no secrets" || fail "app log holds no secrets: ${leaked[*]}"
 
 # every name the app looked up since it started must belong to the harness (see egress/sitecustomize.py)
 outside=$(docker compose exec -T app sh -c 'sort -u /tmp/outbound-lookups.log' \
