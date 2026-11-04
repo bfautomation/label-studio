@@ -21,7 +21,8 @@ git switch -c maintenance/sync-upstream-YYYY-MM-DD
 git merge --no-commit upstream/develop
 ```
 
-Resolve conflicts, run the fork checks, and open an internal PR into `main`.
+Resolve conflicts so that every row of [Behaviour divergences from upstream](#behaviour-divergences-from-upstream)
+still holds, run the fork checks, and open an internal PR into `main`.
 Use merge commits to preserve upstream ancestry. Do not rebase or force-push shared integration branches.
 Choose and validate upstream release tags separately when preparing a deployment.
 
@@ -35,15 +36,42 @@ The preservation branch includes multiple independent changes and is not intende
 - Document batches use per-file jobs on the `high` queue. Their own status and retry code checks those jobs; upstream's single-job import health check is skipped for document batches.
 - The original fork migration `0035_projectimport_document_upload_fields` remains unchanged. Incoming upstream migration `0037_projectimport_progress_fields` depends on it and alters the existing `job_id` column instead of adding it again. This supports fresh installations and upgrades from the original fork. A database already migrated by unmodified upstream requires a separate migration plan.
 
+## Behaviour divergences from upstream
+
+The fork changes these upstream behaviours on purpose. Keep each one when merging upstream, and change its guard test
+only when the divergence itself is meant to change. Paths are under `label_studio/` unless shown otherwise.
+
+| Divergence | Why | Lives in | Guarded by |
+|---|---|---|---|
+| Django sends `X-Frame-Options: SAMEORIGIN` and, over HTTPS, HSTS for a year | Pages are protected without a reverse proxy in front | `core/settings/base.py` | `core/tests/test_security_headers.py` |
+| Usage analytics, vendor error reporting (Sentry) and the version check are off unless configured (`COLLECT_ANALYTICS`, `SENTRY_DSN`, `FRONTEND_SENTRY_DSN`, `LATEST_VERSION_CHECK`) | Nothing leaves the deployment unless deliberately enabled | `core/settings/base.py`, `core/settings/label_studio.py` | `core/tests/test_settings.py` |
+| Storage connections never hand browsers pre-signed links (`ALLOW_PRESIGNED_URLS=false`) | Media is always streamed through the app, with its sign-in and permission checks | `core/settings/base.py`, `io_storages/proxy_api.py`, `io_storages/azure_blob/form_layout.yml` | `tests/test_presign_storage_data.py`, `io_storages/tests/test_proxy_api.py` |
+| Export connections write to storage only on Sync (`EXPORT_STORAGE_SYNC_ON_SAVE=false`) | Labels leave the app in one deliberate step, never as they are saved or deleted | `core/settings/base.py`, `io_storages/*/models.py` | `io_storages/tests/test_export_on_sync_only.py` |
+| Uploaded and exported files are deleted with their records, including when a project is deleted | Deleting data leaves no copy behind in storage | `core/utils/db.py`, `data_import/models.py`, `data_export/models.py`, `projects/functions/__init__.py`, `projects/api.py`, `organizations/functions.py` | `tests/data_import/test_file_upload_cleanup.py`, `data_export/tests/test_file_cleanup.py` |
+| Removing a member from the organization deactivates them | Their sessions, API tokens and new sign-ins are refused | `organizations/api.py` | `organizations/tests/test_member_removal.py` |
+| Request logs carry the path without the query string | Query strings can carry secrets such as invite tokens | `core/utils/formatter.py`, `deploy/uwsgi.ini` | `core/tests/test_log_formatter.py`; `deploy/app-service/smoke.sh` |
+| The `django` logger does not propagate to the root logger | Both use the console handler, so every line would print twice | `core/settings/base.py` | `core/tests/test_settings.py` |
+
+Upstream tests of the original behaviour switch it back on with the `allow_presigned_urls` and
+`export_storage_sync_on_save` fixtures (`tests/conftest.py`, `io_storages/tests/conftest.py`). Keep those fixtures on
+the tests that use them when merging upstream changes to those tests.
+
 ## Validation
 
 `.github/workflows/fork-checks.yml` runs checks for PRs into and pushes to `main`, without HumanSignal organization secrets:
 
-- Document import, import status, Data Manager, Redis, version, and migration tests on SQLite and PostgreSQL.
+- Document import, import status, Data Manager, Redis, version, and migration tests, and the guard tests of the
+  [behaviour divergences](#behaviour-divergences-from-upstream), on SQLite and PostgreSQL.
 - Standalone converter tests.
 - Upload dialog tests, frontend version tests, and a production frontend build.
 
-For deployment, additionally validate the complete container stack, converter/model setup, storage, and restore procedure in staging.
+`deploy/app-service/qualify.sh IMAGE` runs an image in a local copy of its Azure App Service runtime (see
+[`deploy/app-service/README.md`](deploy/app-service/README.md)) and checks serving, security headers, database TLS,
+Blob storage, media, persistence across container replacement, and that the app contacts nothing outside it.
+`azure-pipelines-image.yml` runs it on every push to `main` and publishes the image only after approval. Run it on a
+freshly built image before merging an upstream update.
+
+For deployment, additionally validate the converter/model setup and the restore procedure in staging.
 
 ## Repository governance
 
