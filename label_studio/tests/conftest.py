@@ -67,6 +67,12 @@ def label_stream_history_limit(settings):
     settings.LABEL_STREAM_HISTORY_LIMIT = 1
 
 
+@pytest.fixture
+def allow_presigned_urls(settings):
+    """For tests of the redirect to pre-signed links, which only happens when the app allows them."""
+    settings.ALLOW_PRESIGNED_URLS = True
+
+
 @pytest.fixture(autouse=True)
 def disable_sentry(settings):
     settings.SENTRY_RATE = 0

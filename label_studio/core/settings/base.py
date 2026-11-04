@@ -54,7 +54,8 @@ LOGGING = {
         'rules': {'level': 'WARNING'},
         'django': {
             'handlers': ['console'],
-            # 'propagate': True,
+            # the root logger has the same handler, so propagating would print every line twice
+            'propagate': False,
         },
         'django_auth_ldap': {'level': os.environ.get('LOG_LEVEL', 'DEBUG')},
         'rq.worker': {
@@ -268,6 +269,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
     'core.middleware.DisableCSRF',
@@ -331,6 +333,12 @@ CORS_ALLOW_METHODS = [
     'PUT',
 ]
 ALLOWED_HOSTS = get_env_list('ALLOWED_HOSTS', default=['*'])
+
+# Sent by Django itself so the app is protected without a reverse proxy in front of it:
+# other sites may not frame our pages (clickjacking), and browsers that reached us over HTTPS keep using it for a year.
+# SecurityMiddleware only adds HSTS to secure requests, so plain-HTTP local development is unaffected.
+X_FRAME_OPTIONS = 'SAMEORIGIN'
+SECURE_HSTS_SECONDS = 31536000
 
 # Auth modules
 AUTH_USER_MODEL = 'users.User'
@@ -772,7 +780,7 @@ DATA_UNDEFINED_NAME = '$undefined$'
 LICENSE = {}
 VERSIONS = {}
 VERSION_EDITION = 'Community'
-LATEST_VERSION_CHECK = get_bool_env('LATEST_VERSION_CHECK', True)
+LATEST_VERSION_CHECK = get_bool_env('LATEST_VERSION_CHECK', False)
 VERSIONS_CHECK_TIME = 0
 ALLOW_ORGANIZATION_WEBHOOKS = get_bool_env('ALLOW_ORGANIZATION_WEBHOOKS', False)
 CONVERTER_DOWNLOAD_RESOURCES = get_bool_env('CONVERTER_DOWNLOAD_RESOURCES', True)
@@ -917,8 +925,9 @@ FEATURE_FLAGS_OFFLINE = get_bool_env('FEATURE_FLAGS_OFFLINE', True)
 # default value for feature flags (if not overridden by environment or client)
 FEATURE_FLAGS_DEFAULT_VALUE = False
 
-# Whether to send analytics telemetry data. Fall back to old lowercase name for legacy compatibility.
-COLLECT_ANALYTICS = get_bool_env('COLLECT_ANALYTICS', get_bool_env('collect_analytics', True))
+# Whether to send analytics telemetry data; off unless deliberately enabled.
+# Fall back to old lowercase name for legacy compatibility.
+COLLECT_ANALYTICS = get_bool_env('COLLECT_ANALYTICS', get_bool_env('collect_analytics', False))
 
 # Strip harmful content from SVG files by default
 SVG_SECURITY_CLEANUP = get_bool_env('SVG_SECURITY_CLEANUP', False)
@@ -942,6 +951,12 @@ EXPORT_STORAGE_PRESIGN_TTL_MINUTES = int(get_env('EXPORT_STORAGE_PRESIGN_TTL_MIN
 # an org that requires proxy-only access proxying these objects through Label
 # Studio's own auth, exactly as the presign flag does on import connections.
 EXPORT_STORAGE_PRESIGN = get_bool_env('EXPORT_STORAGE_PRESIGN', default=True)
+# Whether storage connections may hand browsers pre-signed links at all. Off: media is always streamed through
+# Label Studio with its sign-in and permission checks, whatever a connection's own presign flag says.
+ALLOW_PRESIGNED_URLS = get_bool_env('ALLOW_PRESIGNED_URLS', default=False)
+# Whether export connections copy annotations as they are saved and delete them as they are deleted. Off: export
+# storage only changes when someone syncs the connection, so labels leave Label Studio in one deliberate step.
+EXPORT_STORAGE_SYNC_ON_SAVE = get_bool_env('EXPORT_STORAGE_SYNC_ON_SAVE', default=False)
 
 STORAGE_IN_PROGRESS_TIMER = float(get_env('STORAGE_IN_PROGRESS_TIMER', 5.0))
 # Absolute wall-clock stale timeout (seconds) for import/reimport when Redis is down

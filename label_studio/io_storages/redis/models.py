@@ -156,6 +156,8 @@ class RedisExportStorage(RedisStorageMixin, ExportStorage):
 
 @receiver(post_save, sender=Annotation)
 def export_annotation_to_redis_storages(sender, instance, **kwargs):
+    if not settings.EXPORT_STORAGE_SYNC_ON_SAVE:
+        return
     project = instance.project
     if hasattr(project, 'io_storages_redisexportstorages'):
         for storage in project.io_storages_redisexportstorages.all():

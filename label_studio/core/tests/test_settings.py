@@ -97,3 +97,38 @@ print(json.dumps({
         'use_x_forwarded_host': True,
         'use_x_forwarded_port': True,
     }
+
+
+def test_outbound_reporting_is_off_by_default(tmp_path):
+    """Without settings the app sends no usage analytics, no error reports and no version check."""
+    names = ['SENTRY_DSN', 'FRONTEND_SENTRY_DSN', 'COLLECT_ANALYTICS', 'collect_analytics', 'LATEST_VERSION_CHECK']
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not any(key in (name, 'LABEL_STUDIO_' + name, 'HEARTEX_' + name) for name in names)
+    }
+    env.update(
+        {
+            'PYTHONPATH': os.pathsep.join(path for path in ['label_studio', env.get('PYTHONPATH', '')] if path),
+            'LABEL_STUDIO_BASE_DATA_DIR': str(tmp_path),
+            'SECRET_KEY': 'test-only',
+        }
+    )
+    script = """
+import json
+from core.settings import label_studio as settings
+
+print(json.dumps([settings.SENTRY_DSN, settings.FRONTEND_SENTRY_DSN, settings.COLLECT_ANALYTICS,
+                  settings.LATEST_VERSION_CHECK]))
+"""
+    result = subprocess.run([sys.executable, '-c', script], check=True, capture_output=True, env=env, text=True)
+
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == [None, None, False, False]
+
+
+def test_django_log_lines_are_printed_once():
+    """A logger sharing the root logger's handler must not also pass its lines to the root, or each prints twice."""
+    django_logger = base.LOGGING['loggers']['django']
+    shared_handlers = set(django_logger.get('handlers', [])) & set(base.LOGGING['root']['handlers'])
+
+    assert not (shared_handlers and django_logger.get('propagate', True))

@@ -27,6 +27,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, OpenApiResponse, extend_schema
 from label_studio_sdk.label_interface.interface import LabelInterface
 from ml.serializers import MLBackendSerializer
+from projects.functions import delete_projects_stored_files_on_commit
 from projects.functions.next_task import get_next_task
 from projects.functions.search import search_projects
 from projects.functions.stream_history import get_label_stream_history
@@ -437,6 +438,7 @@ class ProjectAPI(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         # we don't need to relaculate counters if we delete whole project
+        delete_projects_stored_files_on_commit([instance])
         with temporary_disconnect_all_signals():
             instance.delete()
 

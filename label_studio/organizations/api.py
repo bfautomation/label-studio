@@ -320,6 +320,9 @@ class OrganizationMemberDetailAPI(GetParentObjectMixin, generics.RetrieveDestroy
     def _delete_member(self, request, user, member):
         """Perform the actual member removal. Override in subclasses to add pre-delete hooks."""
         member.soft_delete()
+        # removal is offboarding: without this the user could still sign in, list project names and mint API tokens
+        user.is_active = False
+        user.save(update_fields=['is_active'])
         return Response(status=204)  # 204 No Content is a common HTTP status for successful delete requests
 
 
