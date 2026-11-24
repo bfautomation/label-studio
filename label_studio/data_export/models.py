@@ -136,15 +136,18 @@ class DataExport(object):
             local_files_resolver=project_local_files_resolver(project),
             http_session=converter_http_session(hostname),
         )
-        # the working copy lives only for the conversion, so no export leaves the data behind on disk
-        with get_temp_dir() as input_dir, get_temp_dir() as tmp_dir:
-            input_json = os.path.join(input_dir, name + '.json')
+        # input, output and archive all live in one workspace that is removed even if conversion fails,
+        # so no export leaves the data behind on disk
+        with get_temp_dir() as workspace:
+            input_json = os.path.join(workspace, name + '.json')
             with open(input_json, 'w', encoding='utf-8') as f:
                 f.write(data)
-            converter.convert(input_json, tmp_dir, output_format, is_dir=False)
-            files = get_all_files_from_dir(tmp_dir)
+            output_dir = os.path.join(workspace, 'output')
+            os.mkdir(output_dir)
+            converter.convert(input_json, output_dir, output_format, is_dir=False)
+            files = get_all_files_from_dir(output_dir)
             # if only one file is exported - no need to create archive
-            if len(os.listdir(tmp_dir)) == 1:
+            if len(os.listdir(output_dir)) == 1:
                 output_file = files[0]
                 ext = os.path.splitext(output_file)[-1]
                 content_type = f'application/{ext}'
@@ -153,8 +156,8 @@ class DataExport(object):
                 return out, content_type, filename
 
             # otherwise pack output directory into archive
-            shutil.make_archive(tmp_dir, 'zip', tmp_dir)
-            out = path_to_open_binary_file(os.path.abspath(tmp_dir + '.zip'))
+            archive = shutil.make_archive(os.path.join(workspace, name), 'zip', output_dir)
+            out = path_to_open_binary_file(archive)
             content_type = 'application/zip'
             filename = name + '.zip'
             return out, content_type, filename

@@ -78,8 +78,10 @@ def get_temp_file():
 @contextmanager
 def get_temp_dir():
     dirpath = mkdtemp()
-    yield dirpath
-    shutil.rmtree(dirpath)
+    try:
+        yield dirpath
+    finally:
+        shutil.rmtree(dirpath)
 
 
 def get_config_dir():
