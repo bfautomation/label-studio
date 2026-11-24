@@ -93,7 +93,7 @@ def set_export_default_name(sender, instance, created, **kwargs):
 
 @receiver(post_delete, sender=Export)
 def cleanup_export_file(sender, instance, **kwargs):
-    delete_stored_file_on_commit(instance.file, using=kwargs.get('using'))
+    delete_stored_file_on_commit(instance.file.storage, instance.file.name, using=kwargs.get('using'))
 
 
 class DataExport(object):
@@ -228,4 +228,4 @@ class ConvertedFormat(models.Model):
 
 @receiver(post_delete, sender=ConvertedFormat)
 def cleanup_converted_format_file(sender, instance, **kwargs):
-    delete_stored_file_on_commit(instance.file, using=kwargs.get('using'))
+    delete_stored_file_on_commit(instance.file.storage, instance.file.name, using=kwargs.get('using'))

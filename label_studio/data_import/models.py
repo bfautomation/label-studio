@@ -537,7 +537,7 @@ def cleanup_document_conversion_artifact_files(sender, instance, **kwargs):
 
 @receiver(post_delete, sender=FileUpload)
 def cleanup_file_upload_file(sender, instance, **kwargs):
-    delete_stored_file_on_commit(instance.file, using=kwargs.get('using'))
+    delete_stored_file_on_commit(instance.file.storage, instance.file.name, using=kwargs.get('using'))
 
 
 def _old_vs_new_data_keys_inconsistency_message(new_data_keys, old_data_keys, current_file):

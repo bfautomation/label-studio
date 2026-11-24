@@ -60,21 +60,23 @@ def annotate_skipped_annotations_number(queryset):
 def delete_projects_stored_files_on_commit(projects):
     """Schedule deletion of the files kept in storage for these projects, once their deletion is committed.
 
-    Call it before deleting projects with signals disconnected, which skips the per-record file cleanup receivers.
+    Call it inside the transaction that deletes the projects with signals disconnected, which skips the per-record
+    file cleanup receivers. Outside a transaction the files would be deleted at once, even if the deletion then fails.
     """
     from core.utils.db import delete_stored_file_on_commit
+    from core.utils.iterators import iterate_queryset
     from data_export.models import ConvertedFormat, Export
     from data_import.models import DocumentConversionArtifact, FileUpload
 
-    stored_files = []
-    for model, project_field in (
-        (FileUpload, 'project'),
-        (Export, 'project'),
-        (ConvertedFormat, 'project'),
-        (DocumentConversionArtifact, 'file_upload__project'),
+    for model, belongs_to_projects in (
+        (FileUpload, Q(project__in=projects)),
+        (Export, Q(project__in=projects)),
+        # the conversion endpoint links its files to the export only, without a project
+        (ConvertedFormat, Q(project__in=projects) | Q(export__project__in=projects)),
+        (DocumentConversionArtifact, Q(file_upload__project__in=projects)),
     ):
-        file_fields = [field.name for field in model._meta.fields if field.get_internal_type() == 'FileField']
-        for record in model.objects.filter(**{f'{project_field}__in': projects}).only(*file_fields):
-            stored_files += [getattr(record, name) for name in file_fields]
-    for stored_file in stored_files:
-        delete_stored_file_on_commit(stored_file)
+        file_fields = [field for field in model._meta.fields if field.get_internal_type() == 'FileField']
+        names = model.objects.filter(belongs_to_projects).values_list(*[field.name for field in file_fields])
+        for row in iterate_queryset(names):
+            for field, name in zip(file_fields, row):
+                delete_stored_file_on_commit(field.storage, name)

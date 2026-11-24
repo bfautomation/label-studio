@@ -26,9 +26,10 @@ def create_organization(title, created_by, legacy_api_tokens_enabled=False, **kw
 
 def destroy_organization(org):
     projects = Project.objects.filter(organization=org)
-    delete_projects_stored_files_on_commit(projects)
-    with temporary_disconnect_all_signals():
-        projects.delete()
-        if hasattr(org, 'saml'):
-            org.saml.delete()
-        org.delete()
+    with transaction.atomic():
+        delete_projects_stored_files_on_commit(projects)
+        with temporary_disconnect_all_signals():
+            projects.delete()
+            if hasattr(org, 'saml'):
+                org.saml.delete()
+            org.delete()

@@ -1,12 +1,15 @@
 import os
 
 import pytest
-from data_export.models import Export
+from data_export.models import ConvertedFormat, Export
 from data_import.models import FileUpload
 from django.core.files.base import ContentFile
 from django.db import transaction
 from jwt_auth.models import JWTSettings
 from organizations.functions import destroy_organization
+from organizations.models import Organization
+from projects.api import ProjectAPI
+from projects.models import Project
 from projects.tests.factories import ProjectFactory
 
 pytestmark = pytest.mark.django_db
@@ -57,12 +60,15 @@ def test_rolled_back_deletion_keeps_the_file(upload, django_capture_on_commit_ca
 
 
 def _stored_files(project):
-    """Give the project an upload and a stored export, and return the paths of their files."""
+    """Give the project an upload, a stored export and a converted export, and return the paths of their files."""
     upload = FileUpload(user=project.created_by, project=project)
     upload.file.save('fictional.wav', ContentFile(b'fictional audio'), save=True)
     export = Export.objects.create(project=project, created_by=project.created_by)
     export.file.save('fictional.json', ContentFile(b'[]'), save=True)
-    paths = [upload.file.path, export.file.path]
+    # created as the conversion endpoint does: linked to the export only, without a project
+    converted, _ = ConvertedFormat.objects.get_or_create(export=export, export_type='CSV')
+    converted.file.save('fictional.csv', ContentFile(b'id'), save=True)
+    paths = [upload.file.path, export.file.path, converted.file.path]
     assert all(os.path.exists(path) for path in paths)
     return paths
 
@@ -94,3 +100,30 @@ def test_deleting_an_organization_deletes_its_projects_files(settings, tmp_path,
         destroy_organization(project.organization)
 
     assert not any(os.path.exists(path) for path in paths)
+
+
+def _fail(*args, **kwargs):
+    raise RuntimeError('deletion failed')
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    'model, destroy',
+    [
+        (Project, lambda project: ProjectAPI().perform_destroy(project)),
+        (Organization, lambda project: destroy_organization(project.organization)),
+    ],
+    ids=['project', 'organization'],
+)
+def test_failed_deletion_keeps_the_files(model, destroy, settings, tmp_path, monkeypatch):
+    """Requests run under autocommit, so the files must wait for the deletion to commit, not be removed up front."""
+    settings.MEDIA_ROOT = str(tmp_path)
+    project = ProjectFactory()
+    paths = _stored_files(project)
+    monkeypatch.setattr(model, 'delete', _fail)
+
+    with pytest.raises(RuntimeError):
+        destroy(project)
+
+    assert Project.objects.filter(pk=project.pk).exists()
+    assert all(os.path.exists(path) for path in paths)

@@ -17,7 +17,7 @@ from core.utils.io import find_dir, find_file, read_yaml
 from core.utils.serializer_to_openapi_params import serializer_to_openapi_params
 from data_manager.functions import filters_ordering_selected_items_exist, get_prepared_queryset
 from django.conf import settings
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.http import Http404
 from django.utils.decorators import method_decorator
@@ -438,9 +438,10 @@ class ProjectAPI(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         # we don't need to relaculate counters if we delete whole project
-        delete_projects_stored_files_on_commit([instance])
-        with temporary_disconnect_all_signals():
-            instance.delete()
+        with transaction.atomic():
+            delete_projects_stored_files_on_commit([instance])
+            with temporary_disconnect_all_signals():
+                instance.delete()
 
     @extend_schema(exclude=True)
     @api_webhook(WebhookAction.PROJECT_UPDATED)

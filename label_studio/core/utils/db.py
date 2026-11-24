@@ -272,14 +272,13 @@ def signal_clear_column_presence_cache(**_kwargs):
     _column_presence_cache.clear()
 
 
-def delete_stored_file_on_commit(field_file, using=None):
-    """Delete the file behind a FileField once the deletion of its record is committed.
+def delete_stored_file_on_commit(storage, name, using=None):
+    """Delete a FileField's file from its storage once the deletion of its record is committed.
 
     A rolled-back deletion keeps the file; a file that cannot be deleted is logged rather than failing the deletion.
     """
-    if not field_file:
+    if not name:
         return
-    storage, name = field_file.storage, field_file.name
 
     def delete():
         try:
