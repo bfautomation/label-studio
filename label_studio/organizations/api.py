@@ -6,6 +6,7 @@ from core.feature_flags import flag_set
 from core.mixins import GetParentObjectMixin
 from core.utils.common import load_func
 from django.conf import settings
+from django.db import transaction
 from django.urls import reverse
 from django.utils.decorators import method_decorator
 from django.utils.functional import cached_property
@@ -315,7 +316,9 @@ class OrganizationMemberDetailAPI(GetParentObjectMixin, generics.RetrieveDestroy
         if member.user_id == request.user.id:
             return Response({'detail': 'User cannot soft delete self'}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
-        return self._delete_member(request, user, member)
+        # one transaction, so a removal that fails part-way changes nothing and can be retried
+        with transaction.atomic():
+            return self._delete_member(request, user, member)
 
     def _delete_member(self, request, user, member):
         """Perform the actual member removal. Override in subclasses to add pre-delete hooks."""
