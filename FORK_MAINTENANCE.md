@@ -48,6 +48,7 @@ For deployment, additionally validate the complete container stack, converter/mo
 ## Repository governance
 
 AI Engineering (`@bfautomation/ai-engineering`) owns this public company fork and has write access.
+Because the fork is public, every contribution follows [`FORK_PRIVACY.md`](FORK_PRIVACY.md).
 The `default-branch` ruleset targets GitHub's default branch, currently `main`, and requires:
 
 - A pull request with one current CODEOWNER approval, including approval of the latest reviewable push.
