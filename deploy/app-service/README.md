@@ -143,30 +143,13 @@ is unavailable", and creates nothing; ordinary imports are unaffected.
 There is no email and no shell into the container on App Service, so accounts are managed in the app: through the
 organization's invite link, and through Django admin at `/admin/`, which superusers can open.
 
-### First deployment: the first admin
-
-1. Store a strong password as a Key Vault secret.
-2. For the first deployment only, add two app settings: `LABEL_STUDIO_USERNAME` set to the first admin's email, and
-   `LABEL_STUDIO_PASSWORD` set to a Key Vault reference to that secret.
-3. Deploy. At start-up the container creates the organization and this admin as a superuser; the log shows
-   `label-studio init completed`.
-4. Sign in as that admin and change the password, so the Key Vault copy is no longer the live one.
-5. Give a second person the invite link (see below). Once they have signed up, open `/admin/` → Users → that person,
-   tick **Staff status** and **Superuser status**, and save. Two superusers mean either can reset the other's
-   password.
-6. Remove both app settings, delete the Key Vault secret and restart. Both admins can still sign in. While the
-   settings are present, start-up re-creates that admin if the account has been deleted.
-7. Reset the invite link.
-
-### Day to day
-
-- **Inviting people:** share the organization's invite link and reset it once everyone has joined. After a reset the
-  old link no longer works.
-- **Offboarding:** in `/admin/` → Users, untick **Active**. Removing someone from the organization does the same. From
-  then on their browser session, existing API tokens and attempts to sign in or sign up again are all refused.
-- **Forgotten password:** another superuser sets a new one in `/admin/` → Users → that user → change password.
-- **Changing `SECRET_KEY`:** signs everyone out and stops every personal access token working; people sign in again
-  and create new tokens.
+- **First admin:** while `LABEL_STUDIO_USERNAME` and `LABEL_STUDIO_PASSWORD` are set, start-up creates the
+  organization and that user as a superuser if they do not exist (the log shows `label-studio init completed`).
+- **Signing up:** only through the organization's invite link. Resetting the link stops the old one working.
+- **Deactivating:** unticking **Active** in `/admin/`, or removing someone from the organization, refuses their
+  browser session, existing API tokens and any attempt to sign in or sign up again.
+- **Passwords:** superusers can set any user's password in `/admin/`.
+- **`SECRET_KEY`:** changing it signs everyone out and stops every personal access token working.
 
 ## What persists
 
@@ -188,12 +171,15 @@ real platform.
 ## Upgrading
 
 The container applies pending database migrations every time it starts, under a lock so two containers never migrate
-at once. To back up before the structure changes:
+at once. Django records each applied migration by name and never runs a recorded name again, so comparing the
+migration names in two images tells whether start-up will migrate. To back up before it does:
 
 1. Compare the deployed image with the candidate: `./schema-changes.sh <deployed image> <candidate image>`. It needs
-   Docker but no database access. Exit code 0 means no schema change, 1 means a schema change, 2 means it failed.
-   The first deployment has nothing to compare and no data to protect.
-2. On a schema change, back up the database before deploying.
+   Docker but no database access. Exit code 0 means both images have the same migration names, so start-up applies
+   none; 1 means the candidate adds or removes migrations; 2 means the comparison failed. A migration edited under an
+   existing name is not detected; start-up does not run it either. The first deployment has nothing to compare and
+   no data to protect.
+2. If the candidate adds or removes migrations, back up the database before deploying.
 3. Deploy, and look for `Migrations completed` in the container log.
-4. If start-up fails after a schema change, restore the database and redeploy the previous image together: the
-   previous image does not work against the changed structure.
+4. If start-up fails after migrating, restore the database and redeploy the previous image together: the previous
+   image does not work against the migrated database.

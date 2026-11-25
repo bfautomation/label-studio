@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Report whether deploying a candidate image over the deployed one changes the database structure.
-# Reads each image's migrations from the image itself, so it needs Docker but no database access.
+# Report whether deploying a candidate image over the deployed one makes start-up apply migrations.
+# Compares the migration names in the two images: Django records applied migrations by name and never runs a recorded
+# name again, so the same names mean start-up migrates nothing. A migration edited under an existing name is not
+# detected, and is not run either. Reads each image's migrations from the image itself, so it needs Docker but no
+# database access.
 # Usage: ./schema-changes.sh DEPLOYED_IMAGE CANDIDATE_IMAGE
-# Exit codes: 0 no schema change, 1 schema change (back up the database first), 2 the comparison failed.
+# Exit codes: 0 same migration names, 1 the candidate adds or removes migrations (back up the database first),
+# 2 the comparison failed.
 
 set -uo pipefail
 
@@ -36,7 +40,7 @@ added=$(comm -13 <(printf '%s\n' "$deployed") <(printf '%s\n' "$candidate"))
 removed=$(comm -23 <(printf '%s\n' "$deployed") <(printf '%s\n' "$candidate"))
 
 if [[ -z $added && -z $removed ]]; then
-  echo "No schema change: both images have the same $(wc -l <<<"$candidate" | tr -d ' ') migrations."
+  echo "No migrations to apply: both images have the same $(wc -l <<<"$candidate" | tr -d ' ') migration names."
   exit 0
 fi
 
@@ -48,5 +52,5 @@ if [[ -n $removed ]]; then
   echo "Migrations the candidate no longer has:"
   sed 's/^/  /' <<<"$removed"
 fi
-echo "Schema change: back up the database before deploying."
+echo "Start-up will migrate: back up the database before deploying."
 exit 1
