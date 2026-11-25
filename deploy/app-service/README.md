@@ -33,7 +33,8 @@ certificate authority unless you trust `.certs/ca.crt`. Sign in with `LABEL_STUD
 
 The app trusts only the harness CA, so an unexpected outbound HTTPS call fails instead of leaving the machine.
 The proof is separate: `egress/sitecustomize.py` (harness only) records every name the app's Python processes look
-up, and `smoke.sh` fails if any of them lies outside the harness.
+up, and `smoke.sh` fails if any of them lies outside the harness. It does not see connections made by IP address or
+names resolved outside Python.
 
 ## Image pipeline
 

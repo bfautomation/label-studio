@@ -1,4 +1,4 @@
-"""Harness only: record every name the app's Python processes look up, so smoke.sh can spot outbound traffic.
+"""Harness only: record every name the app's Python processes look up, so smoke.sh can spot unexpected lookups.
 
 Python loads this file automatically because the harness puts its folder on PYTHONPATH; the image is unchanged.
 """

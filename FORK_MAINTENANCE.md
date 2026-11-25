@@ -67,7 +67,7 @@ the tests that use them when merging upstream changes to those tests.
 
 `deploy/app-service/qualify.sh IMAGE` runs an image in a local copy of its Azure App Service runtime (see
 [`deploy/app-service/README.md`](deploy/app-service/README.md)) and checks serving, security headers, database TLS,
-Blob storage, media, persistence across container replacement, and that the app contacts nothing outside it.
+Blob storage, media, persistence across container replacement, and that the app looks up no names outside it.
 `azure-pipelines-image.yml` runs it on every push to `main` and publishes the image only after approval. Run it on a
 freshly built image before merging an upstream update.
 

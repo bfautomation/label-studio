@@ -13,7 +13,8 @@ set +a
 BASE_URL=${HARNESS_BASE_URL:-https://localhost:${HARNESS_HTTPS_PORT:-8443}}
 CA_CERT=$(pwd)/.certs/ca.crt
 COOKIES=$(mktemp)
-trap 'rm -f "$COOKIES"' EXIT
+VISITOR=$(mktemp)
+trap 'rm -f "$COOKIES" "$VISITOR"' EXIT
 
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1" >&2; exit 1; }
@@ -76,11 +77,22 @@ signed_in_page=$(api "$BASE_URL/projects/")
   || fail "API with session"
 [[ $(status "$BASE_URL/api/projects") == 401 ]] && pass "API rejects anonymous" || fail "API rejects anonymous"
 
-# the signup page always renders; the server must refuse the submission without a valid invite token
-signup=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" -H "Referer: $BASE_URL/user/signup/" \
-  --data-urlencode "csrfmiddlewaretoken=$csrf" --data-urlencode "email=smoke-$RANDOM@example.com" \
-  --data-urlencode "password=Smoke-$RANDOM-Password" "$BASE_URL/user/signup/?token=not-the-invite-token")
+# a new visitor submits the signup form, with its own valid CSRF token but no invite token: only the invite link
+# lets people in, so the server must refuse it (with open signup this would create an account)
+anonymous_signup() {
+  local token
+  curl -s -o /dev/null -c "$VISITOR" "$BASE_URL/user/signup/"
+  token=$(awk '$6 == "csrftoken" {print $7}' "$VISITOR")
+  curl -s -o /dev/null -w '%{http_code}' -b "$VISITOR" -H "Referer: $BASE_URL/user/signup/" \
+    --data-urlencode "csrfmiddlewaretoken=$token" --data-urlencode "email=smoke-$RANDOM@example.com" \
+    --data-urlencode "password=Smoke-$RANDOM-Password" "$BASE_URL/user/signup/${1:-}"
+}
+signup=$(anonymous_signup)
 [[ $signup == 403 ]] && pass "signup without invite is refused" || fail "signup without invite is refused (HTTP $signup)"
+# a wrong invite token in the address is refused too; the log check below makes sure it was not written down
+signup=$(anonymous_signup '?token=not-the-invite-token')
+[[ $signup == 403 ]] && pass "signup with a wrong invite is refused" \
+  || fail "signup with a wrong invite is refused (HTTP $signup)"
 
 # every app login is logged with its TLS state; any login without TLS must have been refused
 app_logins=$(docker compose logs db | grep 'connection authorized: user=labelstudio' || true)
@@ -108,7 +120,7 @@ label_config='<View><Audio name=\"audio\" value=\"$audio\"/></View>'
 project_id=$(api -H 'Content-Type: application/json' \
   -d "{\"title\": \"harness smoke\", \"label_config\": \"$label_config\"}" "$BASE_URL/api/projects" \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
-trap 'api -o /dev/null -X DELETE "$BASE_URL/api/projects/$project_id"; rm -f "$COOKIES" "$AUDIO"' EXIT
+trap 'api -o /dev/null -X DELETE "$BASE_URL/api/projects/$project_id"; rm -f "$COOKIES" "$VISITOR" "$AUDIO"' EXIT
 validate=$(api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{
   \"project\": $project_id, \"container\": \"source\",
   \"account_name\": \"$AZURE_BLOB_ACCOUNT_NAME\", \"account_key\": \"$AZURE_BLOB_ACCOUNT_KEY\"}" \
@@ -155,18 +167,24 @@ for kind in /data/upload/ /resolve/; do
     || fail "media refuses anonymous via $kind (HTTP $anonymous)"
 done
 
-# no secret reaches the app's log, including tokens carried in addresses such as the refused signup above
+# no secret reaches the app's or the front door's log, including tokens carried in addresses such as the refused
+# signup above
+logs=$(docker compose logs app frontdoor 2>&1) || fail "app and front door logs readable"
 leaked=()
 for secret in "$POSTGRES_PASSWORD" "$APP_DB_PASSWORD" "$SECRET_KEY" "$AZURE_BLOB_ACCOUNT_KEY" "$LABEL_STUDIO_PASSWORD" \
   "$(awk '$6 == "sessionid" {print $7}' "$COOKIES")" "$csrf" not-the-invite-token; do
-  docker compose logs app 2>/dev/null | grep -qF -- "$secret" && leaked+=("${secret:0:6}…")
+  grep -qF -- "$secret" <<<"$logs" && leaked+=("${secret:0:6}…")
 done
-[[ ${#leaked[@]} == 0 ]] && pass "app log holds no secrets" || fail "app log holds no secrets: ${leaked[*]}"
+[[ ${#leaked[@]} == 0 ]] && pass "app and front door logs hold no secrets" \
+  || fail "app and front door logs hold no secrets: ${leaked[*]}"
 
-# every name the app looked up since it started must belong to the harness (see egress/sitecustomize.py)
-outside=$(docker compose exec -T app sh -c 'sort -u /tmp/outbound-lookups.log' \
-  | grep -vxF -e db -e "$AZURE_BLOB_ACCOUNT_NAME.blob.core.windows.net" || true)
-[[ -z $outside ]] && pass "app contacted nothing outside the harness" \
-  || fail "app contacted nothing outside the harness: $(tr '\n' ' ' <<<"$outside")"
+# every name the app's Python code looked up since it started must belong to the harness (see egress/sitecustomize.py)
+blob_host=$AZURE_BLOB_ACCOUNT_NAME.blob.core.windows.net
+lookups=$(docker compose exec -T app cat /tmp/outbound-lookups.log) || fail "lookup log readable"
+# the storage checks above made the app look up the storage name, so a log without it is not recording
+grep -qxF "$blob_host" <<<"$lookups" || fail "lookup log records the storage lookups"
+outside=$(sort -u <<<"$lookups" | grep -vxF -e db -e "$blob_host" || true)
+[[ -z $outside ]] && pass "app looked up no names outside the harness" \
+  || fail "app looked up no names outside the harness: $(tr '\n' ' ' <<<"$outside")"
 
 echo "All smoke checks passed against $BASE_URL"
