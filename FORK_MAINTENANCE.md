@@ -51,6 +51,7 @@ only when the divergence itself is meant to change. Paths are under `label_studi
 | Removing a member from the organization deactivates them | Their sessions, API tokens and new sign-ins are refused | `organizations/api.py` | `organizations/tests/test_member_removal.py` |
 | Request logs carry the path without the query string | Query strings can carry secrets such as invite tokens | `core/utils/formatter.py`, `deploy/uwsgi.ini` | `core/tests/test_log_formatter.py`; `deploy/app-service/smoke.sh` |
 | The `django` logger does not propagate to the root logger | Both use the console handler, so every line would print twice | `core/settings/base.py` | `core/tests/test_settings.py` |
+| The container refuses to start while a setting holds an unresolved Key Vault reference | App Service passes the reference text instead of the secret, which would become the admin's password or the key that signs sessions | `deploy/docker-entrypoint.d/app/05-refuse-unresolved-secret-references.sh` | `deploy/app-service/smoke.sh` |
 
 Upstream tests of the original behaviour switch it back on with the `allow_presigned_urls` and
 `export_storage_sync_on_save` fixtures (`tests/conftest.py`, `io_storages/tests/conftest.py`). Keep those fixtures on

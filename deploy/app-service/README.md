@@ -68,6 +68,12 @@ App Service copies it. The remaining app settings:
 
 `LABEL_STUDIO_USERNAME`, `LABEL_STUDIO_PASSWORD` and `REQUESTS_CA_BUNDLE` are harness only.
 
+When App Service cannot resolve a Key Vault reference, it passes the reference's own text, `@Microsoft.KeyVault(…)`,
+as the setting's value. That text would become the admin's password or the key that signs sessions, so the container
+refuses to start while any setting holds it, and names those settings in its log. App Service fetches references again
+whenever the app restarts or its configuration changes, and otherwise every 24 hours: once the app can read the
+secrets, restart it.
+
 The app verifies the PostgreSQL certificate against the image's own trust store (`PGSSLROOTCERT=/etc/ssl/cert.pem`),
 which includes the authorities Azure Database for PostgreSQL uses. `POSTGRE_HOST` must therefore be the server's real
 name, `<server>.postgres.database.azure.com`, not an IP address or the private-link alias. The harness mounts its
