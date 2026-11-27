@@ -22,6 +22,7 @@ from freezegun import freeze_time
 from moto import mock_s3
 from organizations.models import Organization
 from projects.models import Project
+from pytest_django.fixtures import SettingsWrapper
 from tasks.models import Task
 from users.models import User
 
@@ -68,7 +69,7 @@ def label_stream_history_limit(settings):
 
 
 @pytest.fixture
-def allow_presigned_urls(settings):
+def allow_presigned_urls(settings: SettingsWrapper) -> None:
     """For tests of the redirect to pre-signed links, which only happens when the app allows them."""
     settings.ALLOW_PRESIGNED_URLS = True
 

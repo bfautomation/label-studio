@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from jwt_auth.models import LSAPIToken
 from organizations.models import OrganizationMember
@@ -10,7 +12,7 @@ pytestmark = pytest.mark.django_db
 
 
 @mock_feature_flag(flag_name='fflag__feature_develop__prompts__dia_1829_jwt_token_auth', value=True)
-def test_removed_member_is_deactivated_and_loses_api_access():
+def test_removed_member_is_deactivated_and_loses_api_access() -> None:
     """Removing a member offboards them: they are deactivated and their existing API credentials stop working."""
     owner = create_user_with_token_settings(api_tokens_enabled=True, legacy_api_tokens_enabled=False)
     organization = owner.active_organization
@@ -30,7 +32,7 @@ def test_removed_member_is_deactivated_and_loses_api_access():
     assert member_client.get('/api/projects/').status_code == 401
 
 
-def test_failed_member_removal_can_be_retried(monkeypatch):
+def test_failed_member_removal_can_be_retried(monkeypatch: pytest.MonkeyPatch) -> None:
     """A removal that fails part-way changes nothing, so it can simply be retried."""
     owner = create_user_with_token_settings(api_tokens_enabled=True, legacy_api_tokens_enabled=False)
     organization = owner.active_organization
@@ -41,7 +43,7 @@ def test_failed_member_removal_can_be_retried(monkeypatch):
     url = f'/api/organizations/{organization.id}/memberships/{member.id}/'
     save = User.save
 
-    def fail_deactivation(user, *args, **kwargs):
+    def fail_deactivation(user: User, *args: Any, **kwargs: Any) -> None:
         if 'is_active' in (kwargs.get('update_fields') or ()):
             raise RuntimeError('deactivation failed')
         return save(user, *args, **kwargs)

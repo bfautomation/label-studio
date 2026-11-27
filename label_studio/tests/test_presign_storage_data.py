@@ -1,10 +1,12 @@
 import base64
+from typing import Callable
 from unittest.mock import MagicMock
 
 import pytest
 from django.urls import reverse
 from io_storages.proxy_api import ProjectResolveStorageUri, TaskResolveStorageUri
 from projects.models import Project
+from pytest_django.fixtures import SettingsWrapper
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
@@ -194,7 +196,15 @@ class TestTaskResolveStorageUri:
         mock_storage.can_resolve_url.assert_called_with(valid_decoded_uri)
         task.resolve_storage_uri.assert_called_once_with(valid_decoded_uri)
 
-    def test_presign_flag_is_ignored_unless_the_app_allows_it(self, view, task, project, user, monkeypatch, settings):
+    def test_presign_flag_is_ignored_unless_the_app_allows_it(
+        self,
+        view: Callable[..., Response],
+        task: Task,
+        project: Project,
+        user: User,
+        monkeypatch: pytest.MonkeyPatch,
+        settings: SettingsWrapper,
+    ) -> None:
         """A connection asking for pre-signed links still gets its media streamed through the app by default."""
         settings.ALLOW_PRESIGNED_URLS = False
         fileuri = 'azure-blob://source/fictional.wav'

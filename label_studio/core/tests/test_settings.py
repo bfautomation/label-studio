@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from core.settings import base
@@ -99,7 +100,7 @@ print(json.dumps({
     }
 
 
-def test_outbound_reporting_is_off_by_default(tmp_path):
+def test_outbound_reporting_is_off_by_default(tmp_path: Path) -> None:
     """Without settings the app sends no usage analytics, no error reports and no version check."""
     names = ['SENTRY_DSN', 'FRONTEND_SENTRY_DSN', 'COLLECT_ANALYTICS', 'collect_analytics', 'LATEST_VERSION_CHECK']
     env = {
@@ -126,7 +127,7 @@ print(json.dumps([settings.SENTRY_DSN, settings.FRONTEND_SENTRY_DSN, settings.CO
     assert json.loads(result.stdout.strip().splitlines()[-1]) == [None, None, False, False]
 
 
-def test_django_log_lines_are_printed_once():
+def test_django_log_lines_are_printed_once() -> None:
     """A logger sharing the root logger's handler must not also pass its lines to the root, or each prints twice."""
     django_logger = base.LOGGING['loggers']['django']
     shared_handlers = set(django_logger.get('handlers', [])) & set(base.LOGGING['root']['handlers'])

@@ -4,11 +4,12 @@ Python loads this file automatically because the harness puts its folder on PYTH
 """
 
 import sys
+from typing import Any
 
 LOG = '/tmp/outbound-lookups.log'
 
 
-def _record_lookup(event, args):
+def _record_lookup(event: str, args: tuple[Any, ...]) -> None:
     if event == 'socket.getaddrinfo':
         with open(LOG, 'a') as log:
             log.write(f'{args[0]}\n')

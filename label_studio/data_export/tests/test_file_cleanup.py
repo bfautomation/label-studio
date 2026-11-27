@@ -1,31 +1,37 @@
 import os
 import tempfile
 import zipfile
+from pathlib import Path
+from typing import Any, Callable, NoReturn
 
 import pytest
 from data_export.models import ConvertedFormat, Converter, DataExport, Export
 from django.core.files.base import ContentFile
 from projects.tests.factories import ProjectFactory
+from pytest_django import DjangoCaptureOnCommitCallbacks
+from pytest_django.fixtures import SettingsWrapper
 from tasks.tests.factories import TaskFactory
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def media_root(settings, tmp_path):
+def media_root(settings: SettingsWrapper, tmp_path: Path) -> Path:
     settings.MEDIA_ROOT = str(tmp_path / 'media')
     return tmp_path
 
 
 @pytest.fixture
-def export(media_root):
+def export(media_root: Path) -> Export:
     project = ProjectFactory()
     export = Export.objects.create(project=project, created_by=project.created_by)
     export.file.save('fictional.json', ContentFile(b'[]'), save=True)
     return export
 
 
-def test_deleting_an_export_deletes_its_file(export, django_capture_on_commit_callbacks):
+def test_deleting_an_export_deletes_its_file(
+    export: Export, django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks
+) -> None:
     """A stored export removed on its own takes its file with it."""
     path = export.file.path
 
@@ -35,7 +41,9 @@ def test_deleting_an_export_deletes_its_file(export, django_capture_on_commit_ca
     assert not os.path.exists(path)
 
 
-def test_deleting_the_project_deletes_export_and_converted_files(export, django_capture_on_commit_callbacks):
+def test_deleting_the_project_deletes_export_and_converted_files(
+    export: Export, django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks
+) -> None:
     """Deleting a project removes the files of its exports and their converted formats."""
     converted = ConvertedFormat.objects.create(project=export.project, export=export, export_type='CSV')
     converted.file.save('fictional.csv', ContentFile(b'id'), save=True)
@@ -47,7 +55,7 @@ def test_deleting_the_project_deletes_export_and_converted_files(export, django_
     assert not any(os.path.exists(path) for path in paths)
 
 
-def test_download_export_leaves_no_copy_on_disk(settings, tmp_path):
+def test_download_export_leaves_no_copy_on_disk(settings: SettingsWrapper, tmp_path: Path) -> None:
     """Building a download export keeps no working copy of the data in the export directory."""
     settings.EXPORT_DIR = str(tmp_path)
     project = ProjectFactory()
@@ -60,18 +68,20 @@ def test_download_export_leaves_no_copy_on_disk(settings, tmp_path):
     assert os.listdir(tmp_path) == []
 
 
-def _fail_conversion(converter, input_data, output_dir, *args, **kwargs):
+def _fail_conversion(converter: Converter, input_data: str, output_dir: str, *args: Any, **kwargs: Any) -> NoReturn:
     raise RuntimeError('conversion failed')
 
 
-def _convert_to_two_files(converter, input_data, output_dir, *args, **kwargs):
+def _convert_to_two_files(converter: Converter, input_data: str, output_dir: str, *args: Any, **kwargs: Any) -> None:
     for name in ('fictional-1.txt', 'fictional-2.txt'):
         with open(os.path.join(output_dir, name), 'w') as f:
             f.write('fictional')
 
 
 @pytest.mark.parametrize('convert', [_fail_conversion, _convert_to_two_files], ids=['failed', 'multi-file'])
-def test_download_export_leaves_no_working_files(convert, monkeypatch, tmp_path):
+def test_download_export_leaves_no_working_files(
+    convert: Callable[..., None], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Neither a failed conversion nor a zipped multi-file export leaves the data in the temporary folder."""
     monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
     monkeypatch.setattr(Converter, 'convert', convert)

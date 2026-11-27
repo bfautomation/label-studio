@@ -5,7 +5,7 @@ from core.utils.formatter import CustomJsonFormatter
 from django.test import RequestFactory
 
 
-def test_request_is_logged_without_its_query_string():
+def test_request_is_logged_without_its_query_string() -> None:
     """A refused request's log line names the method and path, never secrets carried in the query string."""
     request = RequestFactory().get('/user/signup/', {'token': 'invite-secret'})
     record = logging.LogRecord(

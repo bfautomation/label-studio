@@ -1,8 +1,9 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from io_storages.azure_blob.models import AzureBlobExportStorage, AzureBlobExportStorageLink
 from projects.tests.factories import ProjectFactory
+from pytest_django import DjangoCaptureOnCommitCallbacks
 from tasks.tests.factories import AnnotationFactory, TaskFactory
 
 pytestmark = pytest.mark.django_db
@@ -10,7 +11,9 @@ pytestmark = pytest.mark.django_db
 
 @patch('io_storages.azure_blob.models.AzureBlobExportStorage.delete_annotation')
 @patch('io_storages.azure_blob.models.AzureBlobExportStorage.save_annotation')
-def test_export_storage_changes_only_on_sync(mock_save, mock_delete, django_capture_on_commit_callbacks):
+def test_export_storage_changes_only_on_sync(
+    mock_save: MagicMock, mock_delete: MagicMock, django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks
+) -> None:
     """Saving or deleting an annotation leaves export storage alone; a manual sync is what writes it."""
     project = ProjectFactory()
     storage = AzureBlobExportStorage.objects.create(project=project, container='exports', can_delete_objects=True)

@@ -6,6 +6,7 @@ import os
 import shutil
 from copy import deepcopy
 from datetime import datetime
+from typing import Any
 
 import ujson as json
 from core.utils.common import load_func
@@ -92,7 +93,7 @@ def set_export_default_name(sender, instance, created, **kwargs):
 
 
 @receiver(post_delete, sender=Export)
-def cleanup_export_file(sender, instance, **kwargs):
+def cleanup_export_file(sender: type[Export], instance: Export, **kwargs: Any) -> None:
     delete_stored_file_on_commit(instance.file.storage, instance.file.name, using=kwargs.get('using'))
 
 
@@ -230,5 +231,5 @@ class ConvertedFormat(models.Model):
 
 
 @receiver(post_delete, sender=ConvertedFormat)
-def cleanup_converted_format_file(sender, instance, **kwargs):
+def cleanup_converted_format_file(sender: type[ConvertedFormat], instance: ConvertedFormat, **kwargs: Any) -> None:
     delete_stored_file_on_commit(instance.file.storage, instance.file.name, using=kwargs.get('using'))

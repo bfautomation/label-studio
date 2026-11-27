@@ -4,6 +4,7 @@ import logging
 import os
 import uuid
 from collections import Counter
+from typing import Any
 
 import ijson
 import pandas as pd
@@ -536,7 +537,7 @@ def cleanup_document_conversion_artifact_files(sender, instance, **kwargs):
 
 
 @receiver(post_delete, sender=FileUpload)
-def cleanup_file_upload_file(sender, instance, **kwargs):
+def cleanup_file_upload_file(sender: type[FileUpload], instance: FileUpload, **kwargs: Any) -> None:
     delete_stored_file_on_commit(instance.file.storage, instance.file.name, using=kwargs.get('using'))
 
 
