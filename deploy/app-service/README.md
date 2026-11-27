@@ -22,7 +22,8 @@ docker compose up -d --build
 ./smoke.sh                   # serving, pages, security headers and cookies, API, database TLS, Blob storage, media
 ./persistence.sh             # work and sign-ins survive the app container being replaced (restarts the app)
 ./capacity.sh                # how large an import, sync or export fits in one request (takes a few minutes)
-./qualify.sh IMAGE           # fresh harness on exactly IMAGE, smoke and persistence checks, then remove it all
+./failure-modes.sh IMAGE     # fresh harness on IMAGE: refuses to start on an unresolved secret reference; removed after
+./qualify.sh IMAGE           # fresh harness on exactly IMAGE, smoke, persistence and failure checks, then remove it all
 docker compose down -v       # remove containers and all harness data
 ```
 
@@ -70,9 +71,9 @@ App Service copies it. The remaining app settings:
 
 When App Service cannot resolve a Key Vault reference, it passes the reference's own text, `@Microsoft.KeyVault(…)`,
 as the setting's value. That text would become the admin's password or the key that signs sessions, so the container
-refuses to start while any setting holds it, and names those settings in its log. App Service fetches references again
-whenever the app restarts or its configuration changes, and otherwise every 24 hours: once the app can read the
-secrets, restart it.
+refuses to start while any setting holds it, and names those settings in its log (`failure-modes.sh` checks this).
+App Service fetches references again whenever the app restarts or its configuration changes, and otherwise every 24
+hours: once the app can read the secrets, restart it.
 
 The app verifies the PostgreSQL certificate against the image's own trust store (`PGSSLROOTCERT=/etc/ssl/cert.pem`),
 which includes the authorities Azure Database for PostgreSQL uses. `POSTGRE_HOST` must therefore be the server's real
