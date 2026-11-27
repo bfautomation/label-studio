@@ -179,15 +179,17 @@ real platform.
 ## Upgrading
 
 The container applies pending database migrations every time it starts, under a lock so two containers never migrate
-at once. Django records each applied migration by name and never runs a recorded name again, so comparing the
-migration names in two images tells whether start-up will migrate. To back up before it does:
+at once. Django records each applied migration by name and runs only names it has not recorded, so names a candidate
+image adds are migrations start-up may apply. To back up before it does:
 
 1. Compare the deployed image with the candidate: `./schema-changes.sh <deployed image> <candidate image>`. It needs
-   Docker but no database access. Exit code 0 means both images have the same migration names, so start-up applies
-   none; 1 means the candidate adds or removes migrations; 2 means the comparison failed. A migration edited under an
-   existing name is not detected; start-up does not run it either. The first deployment has nothing to compare and
-   no data to protect.
-2. If the candidate adds or removes migrations, back up the database before deploying.
+   Docker but no database access, so it compares the images, not what the database has applied. Exit code 0 means
+   both images have the same migration names; 1 means the names differ, and it lists the names the candidate adds and
+   those it no longer has; 2 means the comparison failed. A migration edited under an existing name is not detected;
+   start-up does not run it either. The first deployment has nothing to compare and no data to protect.
+2. Back up the database before deploying if the candidate adds migration names, or if the database may not have
+   applied every migration of the deployed image: the last start-up did not log `Migrations completed`, or the
+   database was restored from an older backup.
 3. Deploy, and look for `Migrations completed` in the container log.
 4. If start-up fails after migrating, restore the database and redeploy the previous image together: the previous
    image does not work against the migrated database.

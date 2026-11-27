@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Report whether deploying a candidate image over the deployed one makes start-up apply migrations.
-# Compares the migration names in the two images: Django records applied migrations by name and never runs a recorded
-# name again, so the same names mean start-up migrates nothing. A migration edited under an existing name is not
-# detected, and is not run either. Reads each image's migrations from the image itself, so it needs Docker but no
-# database access.
+# Compare the migration names in two images: the deployed one and a candidate. Django records each applied migration by
+# name and runs only names it has not recorded, so names the candidate adds are migrations start-up may apply. Reads
+# each image's migrations from the image itself, so it needs Docker but no database access: it compares the images, not
+# what the target database has applied. A migration edited under an existing name is not detected, and start-up does
+# not run it either.
 # Usage: ./schema-changes.sh DEPLOYED_IMAGE CANDIDATE_IMAGE
-# Exit codes: 0 same migration names, 1 the candidate adds or removes migrations (back up the database first),
-# 2 the comparison failed.
+# Exit codes: 0 the images have the same migration names, 1 the names differ (listed), 2 the comparison failed.
 
 set -uo pipefail
 
@@ -40,17 +39,22 @@ added=$(comm -13 <(printf '%s\n' "$deployed") <(printf '%s\n' "$candidate"))
 removed=$(comm -23 <(printf '%s\n' "$deployed") <(printf '%s\n' "$candidate"))
 
 if [[ -z $added && -z $removed ]]; then
-  echo "No migrations to apply: both images have the same $(wc -l <<<"$candidate" | tr -d ' ') migration names."
+  count=$(wc -l <<<"$candidate" | tr -d ' ')
+  echo "Unchanged migration-name inventory: both images have the same $count migration names."
   exit 0
 fi
 
 if [[ -n $added ]]; then
-  echo "Migrations the candidate adds:"
+  echo "Migration names the candidate adds:"
   sed 's/^/  /' <<<"$added"
 fi
 if [[ -n $removed ]]; then
-  echo "Migrations the candidate no longer has:"
+  echo "Migration names the candidate no longer has:"
   sed 's/^/  /' <<<"$removed"
 fi
-echo "Start-up will migrate: back up the database before deploying."
+if [[ -n $added ]]; then
+  echo "Start-up may apply these: back up the database before deploying."
+else
+  echo "The candidate adds no migration names, so this comparison gives start-up nothing new to apply."
+fi
 exit 1
