@@ -22,7 +22,8 @@ docker compose up -d --build
 ./smoke.sh                   # serving, pages, security headers and cookies, API, database TLS, Blob storage, media
 ./persistence.sh             # work and sign-ins survive the app container being replaced (restarts the app)
 ./capacity.sh                # how large an import, sync or export fits in one request (takes a few minutes)
-./failure-modes.sh IMAGE     # fresh harness on IMAGE: refuses to start on an unresolved secret reference; removed after
+./failure-modes.sh IMAGE     # fresh harness on IMAGE: refuses to start on an unresolved secret reference, and failed
+                             # or timed-out requests are logged without their query string; removed afterwards
 ./qualify.sh IMAGE           # fresh harness on exactly IMAGE, smoke, persistence and failure checks, then remove it all
 docker compose down -v       # remove containers and all harness data
 ```

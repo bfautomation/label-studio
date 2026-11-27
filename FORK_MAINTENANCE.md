@@ -49,7 +49,7 @@ only when the divergence itself is meant to change. Paths are under `label_studi
 | Export connections write to storage only on Sync (`EXPORT_STORAGE_SYNC_ON_SAVE=false`) | Labels leave the app in one deliberate step, never as they are saved or deleted | `core/settings/base.py`, `io_storages/*/models.py` | `io_storages/tests/test_export_on_sync_only.py` |
 | Uploaded and exported files are deleted once the deletion of their records commits, including converted exports when a project is deleted; download exports leave no working files | Deleting data leaves no copy behind in storage | `core/utils/db.py`, `core/utils/io.py`, `data_import/models.py`, `data_export/models.py`, `projects/functions/__init__.py`, `projects/api.py`, `organizations/functions.py` | `tests/data_import/test_file_upload_cleanup.py`, `data_export/tests/test_file_cleanup.py` |
 | Removing a member from the organization deactivates them | Their sessions, API tokens and new sign-ins are refused | `organizations/api.py` | `organizations/tests/test_member_removal.py` |
-| Request logs carry the path without the query string | Query strings can carry secrets such as invite tokens | `core/utils/formatter.py`, `deploy/uwsgi.ini` | `core/tests/test_log_formatter.py`; `deploy/app-service/smoke.sh` |
+| Logs carry request paths without the query string, including when a request fails or times out | Query strings can carry secrets such as invite tokens | `core/utils/formatter.py`, `deploy/uwsgi.ini` | `core/tests/test_log_formatter.py`; `deploy/app-service/smoke.sh`; `deploy/app-service/failure-modes.sh` |
 | The `django` logger does not propagate to the root logger | Both use the console handler, so every line would print twice | `core/settings/base.py` | `core/tests/test_settings.py` |
 | The container refuses to start while a setting holds an unresolved Key Vault reference | App Service passes the reference text instead of the secret, which would become the admin's password or the key that signs sessions | `deploy/docker-entrypoint.d/app/05-refuse-unresolved-secret-references.sh` | `deploy/app-service/failure-modes.sh` |
 
@@ -68,8 +68,9 @@ the tests that use them when merging upstream changes to those tests.
 
 `deploy/app-service/qualify.sh IMAGE` runs an image in a local copy of its Azure App Service runtime (see
 [`deploy/app-service/README.md`](deploy/app-service/README.md)) and checks serving, security headers, database TLS,
-Blob storage, media, persistence across container replacement, that the app looks up no names outside it, and that
-the container refuses to start on an unresolved secret reference.
+Blob storage, media, persistence across container replacement, that the app looks up no names outside it, that the
+container refuses to start on an unresolved secret reference, and that failed and timed-out requests are logged
+without their query string.
 `azure-pipelines-image.yml` runs it on every push to `main` and publishes the image only after approval. Run it on a
 freshly built image before merging an upstream update.
 

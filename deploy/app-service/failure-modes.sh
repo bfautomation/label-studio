@@ -17,10 +17,11 @@ start_disposable_harness "$1" failure-modes
 BASE_URL=https://localhost:$HARNESS_HTTPS_PORT
 CA_CERT=$(pwd)/.certs/ca.crt
 VISITOR=$(mktemp)
-trap 'rm -f "$VISITOR"; remove_disposable_harness' EXIT
+TIMEOUT_PROBE=label-studio-timeout-probe-$$
+trap 'rm -f "$VISITOR"; docker rm -f "$TIMEOUT_PROBE" >/dev/null 2>&1; remove_disposable_harness' EXIT
 
 pass() { echo "PASS  $1"; }
-fail() { echo "FAIL  $1" >&2; exit 1; }
+fail() { echo "FAIL  $*" >&2; exit 1; }
 
 curl() { command curl --cacert "$CA_CERT" "$@"; }
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
@@ -70,5 +71,52 @@ curl -s -o /dev/null -b "$VISITOR" -c "$VISITOR" -H "Referer: $BASE_URL/user/log
   --data-urlencode "password=$first_admin_password" "$BASE_URL/user/login/"
 grep -q sessionid "$VISITOR" && pass "once resolved, the first admin signs in with the intended password" \
   || fail "once resolved, the first admin signs in with the intended password"
+
+# Requests that fail must be logged without their query string, which can carry secrets such as invite tokens.
+# Each check also proves the failure was logged, so a silent log cannot pass
+marker=not-a-real-token-$(openssl rand -hex 6)
+
+# the app cannot be reached: the front door answers 502 and logs the request
+docker compose stop app >/dev/null 2>&1
+# past the 5 seconds the front door keeps the app's address, so it finds no app rather than waiting on the old address
+sleep 6
+unreachable=$(status "$BASE_URL/user/signup/?token=$marker")
+frontdoor_logs=$(docker compose logs frontdoor 2>&1)
+grep -qF -- "$marker" <<<"$frontdoor_logs" && marker_logged=yes || marker_logged=no
+[[ $unreachable == 502 && $marker_logged == no ]] && grep -qF '"GET /user/signup/ HTTP/1.1" 502' <<<"$frontdoor_logs" \
+  && pass "app unreachable: front door logs the failure without its query string" \
+  || fail "app unreachable: front door logs the failure without its query string" \
+    "(HTTP $unreachable, query string logged: $marker_logged)"
+
+# a request outlives the worker's time limit: uWSGI kills it and reports it. Runs the image's own uwsgi.ini with only
+# the app swapped for one that sleeps, and a limit of 2 seconds
+docker run -d --name "$TIMEOUT_PROBE" --network none -e UWSGI_WORKER_HARAKIRI=2 -e UWSGI_PROCESSES=1 \
+  --entrypoint sh "$HARNESS_IMAGE" -c 'mkdir -p /tmp/probe &&
+    printf "%s\n" "import time" "def application(environ, start_response):" "    time.sleep(10)" \
+      >/tmp/probe/sleeps.py &&
+    exec uwsgi --ini /label-studio/deploy/uwsgi.ini --chdir /tmp/probe --module sleeps:application' >/dev/null
+timed_out() {
+  docker exec "$TIMEOUT_PROBE" python3 -c "import urllib.request
+try:
+    urllib.request.urlopen('http://127.0.0.1:8000$1', timeout=30)
+except Exception:
+    pass"
+}
+for _ in $(seq 30); do
+  docker logs "$TIMEOUT_PROBE" 2>&1 | grep -q 'WSGI app 0' && break
+  sleep 1
+done
+timed_out "/with-query?token=$marker"
+timed_out /no-query
+for _ in $(seq 10); do
+  timeout_logs=$(docker logs "$TIMEOUT_PROBE" 2>&1)
+  grep -qF 'GET /no-query' <<<"$timeout_logs" && break
+  sleep 1
+done
+grep -qF -- "$marker" <<<"$timeout_logs" && marker_logged=yes || marker_logged=no
+[[ $(grep -c 'HARAKIRI ON WORKER' <<<"$timeout_logs") -ge 2 && $marker_logged == no ]] \
+  && grep -qF 'GET /no-query' <<<"$timeout_logs" \
+  && pass "request timed out: uWSGI reports it without its query string" \
+  || fail "request timed out: uWSGI reports it without its query string (query string logged: $marker_logged)"
 
 echo "All failure checks passed on $HARNESS_IMAGE"
