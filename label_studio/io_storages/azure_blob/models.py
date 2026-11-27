@@ -302,6 +302,8 @@ def async_export_annotation_to_azure_storages(annotation: 'Annotation | int'):
 
 @receiver(post_save, sender=Annotation)
 def export_annotation_to_azure_storages(sender, instance, **kwargs):
+    if not settings.EXPORT_STORAGE_SYNC_ON_SAVE:
+        return
     storages = getattr(instance.project, 'io_storages_azureblobexportstorages', None)
     if storages and storages.exists():  # avoid excess jobs in rq
         transaction.on_commit(lambda: start_job_async_or_sync(async_export_annotation_to_azure_storages, instance.pk))
@@ -309,6 +311,8 @@ def export_annotation_to_azure_storages(sender, instance, **kwargs):
 
 @receiver(pre_delete, sender=Annotation)
 def delete_annotation_from_azure_storages(sender, instance, **kwargs):
+    if not settings.EXPORT_STORAGE_SYNC_ON_SAVE:
+        return
     links = AzureBlobExportStorageLink.objects.filter(annotation=instance)
     for link in links:
         storage = link.storage

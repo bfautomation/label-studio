@@ -1,3 +1,6 @@
+from contextlib import contextmanager
+from typing import Iterator
+
 from core.feature_flags import flag_set
 from core.utils.db import SQCount
 from django.db.models import Count, OuterRef, Q
@@ -55,3 +58,36 @@ def annotate_ground_truth_number(queryset):
 def annotate_skipped_annotations_number(queryset):
     subquery = Annotation.objects.filter(Q(project=OuterRef('pk')) & Q(was_cancelled=True)).values('id')
     return queryset.annotate(skipped_annotations_number=SQCount(subquery))
+
+
+@contextmanager
+def signals_disconnected_except_file_cleanup() -> Iterator[None]:
+    """Disconnect every model signal, as bulk deletions do, except the receivers that delete a record's stored files.
+
+    Django then schedules the files of exactly the records it deletes, so a record added while the deletion runs is
+    never deleted without its file. Use it inside the transaction that deletes: the files go once that commits.
+    """
+    from core.utils.common import temporary_disconnect_all_signals
+    from data_export.models import (
+        ConvertedFormat,
+        Export,
+        cleanup_converted_format_file,
+        cleanup_export_file,
+    )
+    from data_import.models import (
+        DocumentConversionArtifact,
+        FileUpload,
+        cleanup_document_conversion_artifact_files,
+        cleanup_file_upload_file,
+    )
+    from django.db.models.signals import post_delete
+
+    with temporary_disconnect_all_signals():
+        for receiver, sender in (
+            (cleanup_file_upload_file, FileUpload),
+            (cleanup_document_conversion_artifact_files, DocumentConversionArtifact),
+            (cleanup_export_file, Export),
+            (cleanup_converted_format_file, ConvertedFormat),
+        ):
+            post_delete.connect(receiver, sender=sender)
+        yield

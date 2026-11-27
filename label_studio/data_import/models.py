@@ -4,6 +4,7 @@ import logging
 import os
 import uuid
 from collections import Counter
+from typing import Any
 
 import ijson
 import pandas as pd
@@ -13,6 +14,7 @@ try:
 except:  # noqa: E722
     import json
 
+from core.utils.db import delete_stored_file_on_commit
 from core.utils.exceptions import extract_message
 from django.conf import settings
 from django.core.exceptions import SuspiciousFileOperation
@@ -532,6 +534,11 @@ class DocumentConversionArtifact(models.Model):
 @receiver(post_delete, sender=DocumentConversionArtifact)
 def cleanup_document_conversion_artifact_files(sender, instance, **kwargs):
     transaction.on_commit(instance._delete_attached_files, using=kwargs.get('using'))
+
+
+@receiver(post_delete, sender=FileUpload)
+def cleanup_file_upload_file(sender: type[FileUpload], instance: FileUpload, **kwargs: Any) -> None:
+    delete_stored_file_on_commit(instance.file.storage, instance.file.name, using=kwargs.get('using'))
 
 
 def _old_vs_new_data_keys_inconsistency_message(new_data_keys, old_data_keys, current_file):

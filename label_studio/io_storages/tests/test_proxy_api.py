@@ -12,10 +12,17 @@ from io_storages.proxy_api import (
     TaskResolveStorageUri,
 )
 from projects.models import Project
+from pytest_django.fixtures import SettingsWrapper
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
 from tasks.models import Task
+
+
+@pytest.fixture(autouse=True)
+def allow_presigned_urls(settings: SettingsWrapper) -> None:
+    # these tests cover the redirect to pre-signed links, which only happens when the app allows them
+    settings.ALLOW_PRESIGNED_URLS = True
 
 
 class TestResolveStorageUriAPIMixin(unittest.TestCase):

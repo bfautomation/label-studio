@@ -3,6 +3,7 @@ import logging
 import time
 from typing import Dict, Optional, TypeVar
 
+from django.core.files.storage import Storage
 from django.db import IntegrityError, OperationalError, connection, models, transaction
 from django.db.models import Model, QuerySet, Subquery
 from django.db.models.signals import post_migrate
@@ -270,3 +271,20 @@ def signal_clear_column_presence_cache(**_kwargs):
     so that the next migration can introspect the new column using has_column_cached()."""
     logger.debug('Clearing column presence cache in post_migrate signal')
     _column_presence_cache.clear()
+
+
+def delete_stored_file_on_commit(storage: Storage, name: Optional[str], using: Optional[str] = None) -> None:
+    """Delete a FileField's file from its storage once the deletion of its record is committed.
+
+    A rolled-back deletion keeps the file; a file that cannot be deleted is logged rather than failing the deletion.
+    """
+    if not name:
+        return
+
+    def delete() -> None:
+        try:
+            storage.delete(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('Failed to delete stored file %s: %s', name, exc)
+
+    transaction.on_commit(delete, using=using)

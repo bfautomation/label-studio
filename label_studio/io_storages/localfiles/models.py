@@ -220,6 +220,8 @@ class LocalFilesExportStorageLink(ExportStorageLink):
 
 @receiver(post_save, sender=Annotation)
 def export_annotation_to_local_files(sender, instance, **kwargs):
+    if not settings.EXPORT_STORAGE_SYNC_ON_SAVE:
+        return
     project = instance.project
     if hasattr(project, 'io_storages_localfilesexportstorages'):
         for storage in project.io_storages_localfilesexportstorages.all():
@@ -229,6 +231,8 @@ def export_annotation_to_local_files(sender, instance, **kwargs):
 
 @receiver(pre_delete, sender=Annotation)
 def delete_annotation_from_local_files(sender, instance, **kwargs):
+    if not settings.EXPORT_STORAGE_SYNC_ON_SAVE:
+        return
     links = LocalFilesExportStorageLink.objects.filter(annotation=instance)
     for link in links:
         storage = link.storage

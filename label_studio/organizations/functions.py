@@ -1,7 +1,7 @@
-from core.utils.common import temporary_disconnect_all_signals
 from django.conf import settings
 from django.db import transaction
 from organizations.models import Organization, OrganizationMember
+from projects.functions import signals_disconnected_except_file_cleanup
 from projects.models import Project
 
 
@@ -24,8 +24,10 @@ def create_organization(title, created_by, legacy_api_tokens_enabled=False, **kw
 
 
 def destroy_organization(org):
-    with temporary_disconnect_all_signals():
-        Project.objects.filter(organization=org).delete()
-        if hasattr(org, 'saml'):
-            org.saml.delete()
-        org.delete()
+    projects = Project.objects.filter(organization=org)
+    with transaction.atomic():
+        with signals_disconnected_except_file_cleanup():
+            projects.delete()
+            if hasattr(org, 'saml'):
+                org.saml.delete()
+            org.delete()

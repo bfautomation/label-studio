@@ -10,14 +10,14 @@ from core.label_config import config_essential_data_has_changed
 from core.mixins import GetParentObjectMixin
 from core.permissions import ViewClassPermission, all_permissions
 from core.redis import start_job_async_or_sync
-from core.utils.common import paginator, paginator_help, temporary_disconnect_all_signals
+from core.utils.common import paginator, paginator_help
 from core.utils.exceptions import LabelStudioDatabaseException, ProjectExistException
 from core.utils.filterset_to_openapi_params import filterset_to_openapi_params
 from core.utils.io import find_dir, find_file, read_yaml
 from core.utils.serializer_to_openapi_params import serializer_to_openapi_params
 from data_manager.functions import filters_ordering_selected_items_exist, get_prepared_queryset
 from django.conf import settings
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.http import Http404
 from django.utils.decorators import method_decorator
@@ -27,6 +27,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, OpenApiResponse, extend_schema
 from label_studio_sdk.label_interface.interface import LabelInterface
 from ml.serializers import MLBackendSerializer
+from projects.functions import signals_disconnected_except_file_cleanup
 from projects.functions.next_task import get_next_task
 from projects.functions.search import search_projects
 from projects.functions.stream_history import get_label_stream_history
@@ -437,8 +438,9 @@ class ProjectAPI(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         # we don't need to relaculate counters if we delete whole project
-        with temporary_disconnect_all_signals():
-            instance.delete()
+        with transaction.atomic():
+            with signals_disconnected_except_file_cleanup():
+                instance.delete()
 
     @extend_schema(exclude=True)
     @api_webhook(WebhookAction.PROJECT_UPDATED)
