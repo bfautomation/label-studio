@@ -1,10 +1,12 @@
 import os
+import threading
 
 import pytest
 from data_export.models import ConvertedFormat, Export
 from data_import.models import FileUpload
 from django.core.files.base import ContentFile
-from django.db import transaction
+from django.db import IntegrityError, connection, connections, transaction
+from django.db.models.deletion import Collector
 from jwt_auth.models import JWTSettings
 from organizations.functions import destroy_organization
 from organizations.models import Organization
@@ -76,7 +78,7 @@ def _stored_files(project):
 def test_deleting_a_project_through_the_api_deletes_its_files(
     business_client, configured_project, settings, tmp_path, django_capture_on_commit_callbacks
 ):
-    """The project API deletes with signals disconnected, so it cleans up the project's files itself."""
+    """The project API deletes with signals disconnected except those that delete stored files."""
     settings.MEDIA_ROOT = str(tmp_path)
     paths = _stored_files(configured_project)
 
@@ -127,3 +129,71 @@ def test_failed_deletion_keeps_the_files(model, destroy, settings, tmp_path, mon
 
     assert Project.objects.filter(pk=project.pk).exists()
     assert all(os.path.exists(path) for path in paths)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize('when', ['before', 'after'])
+@pytest.mark.parametrize(
+    'destroy',
+    [
+        lambda project: ProjectAPI().perform_destroy(project),
+        lambda project: destroy_organization(project.organization),
+    ],
+    ids=['project', 'organization'],
+)
+def test_upload_committed_during_a_deletion_keeps_its_row_and_file_together(
+    destroy, when, settings, tmp_path, monkeypatch
+):
+    """A deletion removes the files of exactly the uploads it deletes, even one another connection commits while it
+    runs: committed before Django looks up the rows to delete, it goes with its file; committed after, the database
+    refuses the deletion and both uploads keep their files."""
+    if connection.vendor != 'postgresql':
+        pytest.skip('needs a second connection committing while the deletion runs')
+    settings.MEDIA_ROOT = str(tmp_path)
+    project = ProjectFactory()
+    # see test_deleting_an_organization_deletes_its_projects_files
+    JWTSettings.objects.filter(organization=project.organization).delete()
+    first = FileUpload(user=project.created_by, project=project)
+    first.file.save('fictional.wav', ContentFile(b'fictional audio'), save=True)
+    late = {}
+
+    def commit_late_upload():
+        upload = FileUpload(user=project.created_by, project=project)
+        upload.file.save('fictional-late.wav', ContentFile(b'fictional audio'), save=True)
+        late.update(pk=upload.pk, path=upload.file.path)
+        connections.close_all()
+
+    def in_another_connection(work):
+        thread = threading.Thread(target=work)
+        thread.start()
+        thread.join()
+
+    # commit the late upload around the first deletion's outermost lookup; nested and later lookups run unchanged
+    lookup = Collector.collect
+    depth = 0
+
+    def collect(self, *args, **kwargs):
+        nonlocal depth
+        outermost = depth == 0 and not late
+        if outermost and when == 'before':
+            in_another_connection(commit_late_upload)
+        depth += 1
+        try:
+            return lookup(self, *args, **kwargs)
+        finally:
+            depth -= 1
+            if outermost and when == 'after':
+                in_another_connection(commit_late_upload)
+
+    monkeypatch.setattr(Collector, 'collect', collect)
+
+    if when == 'before':
+        destroy(project)
+    else:
+        with pytest.raises(IntegrityError):
+            destroy(project)
+
+    files = {first.pk: first.file.path, late['pk']: late['path']}
+    remaining = set(FileUpload.objects.filter(pk__in=files).values_list('pk', flat=True))
+    assert remaining == (set() if when == 'before' else set(files))
+    assert {pk for pk, path in files.items() if os.path.exists(path)} == remaining

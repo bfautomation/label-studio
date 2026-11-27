@@ -1,3 +1,6 @@
+from contextlib import contextmanager
+from typing import Iterator
+
 from core.feature_flags import flag_set
 from core.utils.db import SQCount
 from django.db.models import Count, OuterRef, Q
@@ -57,26 +60,34 @@ def annotate_skipped_annotations_number(queryset):
     return queryset.annotate(skipped_annotations_number=SQCount(subquery))
 
 
-def delete_projects_stored_files_on_commit(projects):
-    """Schedule deletion of the files kept in storage for these projects, once their deletion is committed.
+@contextmanager
+def signals_disconnected_except_file_cleanup() -> Iterator[None]:
+    """Disconnect every model signal, as bulk deletions do, except the receivers that delete a record's stored files.
 
-    Call it inside the transaction that deletes the projects with signals disconnected, which skips the per-record
-    file cleanup receivers. Outside a transaction the files would be deleted at once, even if the deletion then fails.
+    Django then schedules the files of exactly the records it deletes, so a record added while the deletion runs is
+    never deleted without its file. Use it inside the transaction that deletes: the files go once that commits.
     """
-    from core.utils.db import delete_stored_file_on_commit
-    from core.utils.iterators import iterate_queryset
-    from data_export.models import ConvertedFormat, Export
-    from data_import.models import DocumentConversionArtifact, FileUpload
+    from core.utils.common import temporary_disconnect_all_signals
+    from data_export.models import (
+        ConvertedFormat,
+        Export,
+        cleanup_converted_format_file,
+        cleanup_export_file,
+    )
+    from data_import.models import (
+        DocumentConversionArtifact,
+        FileUpload,
+        cleanup_document_conversion_artifact_files,
+        cleanup_file_upload_file,
+    )
+    from django.db.models.signals import post_delete
 
-    for model, belongs_to_projects in (
-        (FileUpload, Q(project__in=projects)),
-        (Export, Q(project__in=projects)),
-        # the conversion endpoint links its files to the export only, without a project
-        (ConvertedFormat, Q(project__in=projects) | Q(export__project__in=projects)),
-        (DocumentConversionArtifact, Q(file_upload__project__in=projects)),
-    ):
-        file_fields = [field for field in model._meta.fields if field.get_internal_type() == 'FileField']
-        names = model.objects.filter(belongs_to_projects).values_list(*[field.name for field in file_fields])
-        for row in iterate_queryset(names):
-            for field, name in zip(file_fields, row):
-                delete_stored_file_on_commit(field.storage, name)
+    with temporary_disconnect_all_signals():
+        for receiver, sender in (
+            (cleanup_file_upload_file, FileUpload),
+            (cleanup_document_conversion_artifact_files, DocumentConversionArtifact),
+            (cleanup_export_file, Export),
+            (cleanup_converted_format_file, ConvertedFormat),
+        ):
+            post_delete.connect(receiver, sender=sender)
+        yield
